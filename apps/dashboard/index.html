@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MetroPulse Lakehouse</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">MP</div>
+          <div>
+            <strong>MetroPulse</strong>
+            <span>Lakehouse</span>
+          </div>
+        </div>
+        <nav aria-label="Dashboard navigation">
+          <button class="nav-item active" type="button">
+            <span class="icon">▦</span>
+            Dashboard
+          </button>
+          <button class="nav-item" type="button">
+            <span class="icon">◷</span>
+            Pipeline
+          </button>
+          <button class="nav-item" type="button">
+            <span class="icon">✓</span>
+            Quality
+          </button>
+          <button class="nav-item" type="button">
+            <span class="icon">▤</span>
+            Tables
+          </button>
+          <button class="nav-item" type="button">
+            <span class="icon">⌁</span>
+            Docs
+          </button>
+        </nav>
+        <div class="sidebar-footer">
+          <span class="footer-icon">◇</span>
+          <div>
+            <strong>DuckDB warehouse</strong>
+            <span>Bronze to gold marts</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <h1>MetroPulse Lakehouse</h1>
+            <p id="date-range">Loading data window</p>
+          </div>
+          <div class="run-chip" id="run-status">connecting</div>
+        </header>
+
+        <div class="state-panel" id="loading-state">
+          <strong>Loading warehouse metrics</strong>
+        </div>
+        <div class="state-panel error hidden" id="error-state"></div>
+
+        <section class="dashboard-grid hidden" id="dashboard">
+          <section class="kpi-row" aria-label="Key metrics" id="kpis"></section>
+
+          <section class="chart-panel">
+            <div class="panel-header">
+              <h2>Trips and revenue by hour</h2>
+              <span>Gold mart: hourly_mobility</span>
+            </div>
+            <div class="chart-wrap">
+              <svg id="timeseries-chart" viewBox="0 0 720 250" role="img" aria-label="Trips and revenue time series"></svg>
+              <div class="legend">
+                <span><i class="legend-dot trips"></i>Trips</span>
+                <span><i class="legend-dot revenue"></i>Revenue</span>
+              </div>
+            </div>
+          </section>
+
+          <aside class="right-rail">
+            <section class="rail-panel">
+              <div class="panel-header">
+                <h2>Pipeline runs</h2>
+                <span>Ops metadata</span>
+              </div>
+              <div class="timeline" id="runs"></div>
+            </section>
+            <section class="rail-panel">
+              <div class="panel-header">
+                <h2>Quality checks</h2>
+                <span>Latest run</span>
+              </div>
+              <div class="quality-list" id="quality"></div>
+            </section>
+          </aside>
+
+          <section class="table-panel">
+            <div class="panel-header">
+              <h2>Station performance</h2>
+              <span>Top departure stations</span>
+            </div>
+            <div class="table-wrap" id="stations"></div>
+          </section>
+
+          <section class="zone-panel">
+            <div class="panel-header">
+              <h2>Revenue by zone</h2>
+              <span>Gold mart: revenue_by_zone</span>
+            </div>
+            <div class="zone-list" id="zones"></div>
+          </section>
+
+          <section class="lineage-panel">
+            <div class="panel-header">
+              <h2>Data lineage</h2>
+              <span id="lineage-run">Latest run</span>
+            </div>
+            <div class="lineage-map" id="lineage"></div>
+          </section>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

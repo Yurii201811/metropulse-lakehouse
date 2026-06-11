@@ -1,0 +1,12 @@
+.DS_Store
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.test-runs/
+*.egg-info/
+data/raw/*.csv
+data/warehouse/*.duckdb
+data/warehouse/*.duckdb.wal
+apps/dashboard/node_modules/
+apps/dashboard/dist/
