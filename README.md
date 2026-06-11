@@ -16,6 +16,7 @@ This project is designed to be easy to run locally and easy to explain in a Data
 - FastAPI service over analytics-ready tables
 - Dependency-free web dashboard consuming the API
 - Automated tests for the pipeline and API
+- CI workflow that reruns the local verification path
 - Clear architecture and interview notes
 
 ## Architecture
@@ -81,6 +82,12 @@ make api        # serve FastAPI
 make dashboard  # serve the local dashboard
 ```
 
+For the same verification path used by CI:
+
+```bash
+bash scripts/verify.sh
+```
+
 ## Repository Layout
 
 ```text
@@ -89,6 +96,7 @@ make dashboard  # serve the local dashboard
 ├── data/raw/             # Generated source files
 ├── data/warehouse/       # DuckDB warehouse file
 ├── docs/                 # Architecture and interview notes
+├── scripts/              # Local verification helpers
 ├── src/metropulse/       # Pipeline, transformations, API, CLI
 └── tests/                # Pipeline and API tests
 ```
@@ -131,7 +139,10 @@ Good talking points:
 - Why quality checks are stored as data, not just printed to logs
 - How deterministic source generation supports reliable local testing
 - How FastAPI decouples the dashboard from warehouse internals
+- How CI proves the project still works after changes
 - How you would evolve this into Airflow/Dagster, object storage, dbt, and a cloud warehouse
+
+See [docs/portfolio-case-study.md](docs/portfolio-case-study.md) for a concise case-study version you can reuse in a portfolio page.
 
 ## Dashboard
 
