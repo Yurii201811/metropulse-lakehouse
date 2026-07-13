@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from typing import Annotated
 
@@ -10,7 +11,7 @@ from rich.table import Table
 
 from metropulse.api import create_app
 from metropulse.config import ProjectPaths
-from metropulse.orchestration import run_pipeline
+from metropulse.orchestration import PipelineResult, replay_pipeline, run_pipeline
 from metropulse.warehouse import connect
 
 app = typer.Typer(help="MetroPulse Lakehouse data engineering portfolio project.")
@@ -26,6 +27,13 @@ def run(
         int, typer.Option(min=2, help="Number of synthetic raw days to generate.")
     ] = 45,
     seed: Annotated[int, typer.Option(help="Deterministic source-data seed.")] = 20260611,
+    as_of: Annotated[
+        str | None,
+        typer.Option(
+            "--as-of",
+            help="Inclusive snapshot end date (defaults to yesterday).",
+        ),
+    ] = None,
     fail_on_quality: Annotated[
         bool, typer.Option(help="Exit non-zero when a quality check fails.")
     ] = True,
@@ -36,8 +44,36 @@ def run(
         project_root=project_root,
         days=days,
         seed=seed,
+        as_of_date=_parse_as_of_date(as_of),
         fail_on_quality=fail_on_quality,
     )
+    _print_pipeline_result(result)
+
+
+@app.command()
+def replay(
+    run_id: Annotated[
+        str,
+        typer.Option("--run-id", help="Prior run whose immutable sources should be replayed."),
+    ],
+    project_root: Annotated[
+        Path, typer.Option(help="Project root containing data/ folders.")
+    ] = Path("."),
+    fail_on_quality: Annotated[
+        bool, typer.Option(help="Exit non-zero when a quality check fails.")
+    ] = True,
+) -> None:
+    """Verify a prior manifest, rebuild it, and compare its snapshot fingerprints."""
+
+    result = replay_pipeline(
+        replay_run_id=run_id,
+        project_root=project_root,
+        fail_on_quality=fail_on_quality,
+    )
+    _print_pipeline_result(result)
+
+
+def _print_pipeline_result(result: PipelineResult) -> None:
     if result.failed_checks:
         console.print(
             f"[bold yellow]Pipeline published with failed quality gates[/] run_id={result.run_id}"
@@ -49,6 +85,13 @@ def run(
     console.print(f"Rejected trips: [bold]{result.rejected_trips:,}[/]")
     console.print(f"Source manifests: [bold]{len(result.ingest_files)}[/]")
     console.print(f"Gold hourly rows: [bold]{result.gold_hourly_rows:,}[/]")
+    console.print(
+        "Snapshot: "
+        f"[bold]{result.data_interval_start}[/] to [bold]{result.data_interval_end}[/] "
+        f"({result.source_mode})"
+    )
+    console.print(f"Input fingerprint: [bold]{result.input_set_sha256[:16]}[/]")
+    console.print(f"Output fingerprint: [bold]{result.output_set_sha256[:16]}[/]")
 
     table = Table(title="Quality Checks")
     table.add_column("Check")
@@ -60,6 +103,15 @@ def run(
         observed = "null" if check.observed_value is None else f"{check.observed_value:.4g}"
         table.add_row(check.name, status, observed, check.threshold)
     console.print(table)
+
+
+def _parse_as_of_date(value: str | None) -> date | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise typer.BadParameter("--as-of must use YYYY-MM-DD format") from exc
 
 
 @app.command("show-summary")
@@ -109,11 +161,18 @@ def status(
                 started_at,
                 ended_at,
                 published_at,
+                source_mode,
+                replay_of_run_id,
+                data_interval_start,
+                data_interval_end,
                 raw_trips,
                 silver_trips,
                 rejected_trips,
                 quality_passed,
-                quality_failed
+                quality_failed,
+                contract_version,
+                left(input_set_sha256, 16) AS input_set_sha256,
+                left(output_set_sha256, 16) AS output_set_sha256
             FROM ops.pipeline_runs
             ORDER BY started_at DESC
             LIMIT 1

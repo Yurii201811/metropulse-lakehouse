@@ -2,6 +2,33 @@
 
 All notable project changes are documented here.
 
+## 0.3.0 — 2026-07-13
+
+### Added
+
+- Explicit snapshot dating with `metropulse run --as-of YYYY-MM-DD`
+- Manifest-verified replay with `metropulse replay --run-id RUN_ID`, run-private source staging, and mandatory input/output fingerprint equivalence
+- Run metadata for data intervals, generated/replay mode, parent and replay links, package and contract versions, and configuration/input/output SHA-256 values
+- Twelve dataset profiles, six business-column relation fingerprints, and nine thresholded cross-snapshot drift comparisons
+- `data_interval_end_gap_days` and `cross_snapshot_drift` publication gates, bringing the candidate policy to 13 checks
+- `GET /api/drift` and `GET /api/pipeline-runs/{run_id}`, plus historical `run_id` filters on quality and ingest-file endpoints
+- Console drift status and run-investigation views for manifests, profiles, fingerprints, checks, and replay lineage
+- Release-version parity checks plus CI build, metadata validation, clean-wheel installation, and fixed-date pipeline smoke coverage
+
+### Changed
+
+- Package, API, and dashboard version advanced to `0.3.0`
+- Deterministic generation now uses days, seed, contract, and an inclusive data-interval end instead of relying on the execution date
+- Replay reuses the original run's interval and configuration only after validating a complete four-file manifest, file sizes, and SHA-256 digests
+- Relation hashes exclude ingestion-only metadata so equivalent business snapshots remain comparable across run IDs
+- Failed quality or drift candidates retain prior published silver/gold data while recording their operational evidence
+- Package licensing uses current PEP 639 metadata
+
+### Fixed
+
+- Historical snapshots and replays no longer fail a wall-clock freshness rule; the declared interval end is checked against the latest accepted trip date
+- Missing, modified, resized, path-escaping, or non-equivalent replay inputs and outputs are rejected and cannot replace the published snapshot
+
 ## 0.2.0 — 2026-07-13
 
 ### Added

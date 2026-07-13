@@ -14,6 +14,9 @@ const preciseCurrencyFormatter = new Intl.NumberFormat('en-US', {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
+const driftValueFormatter = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: 3,
+});
 const dateFormatter = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
   month: 'short',
@@ -152,6 +155,18 @@ export function statusDescriptor(run) {
   return { label: prettyName(run.status || 'unknown'), tone: 'offline', symbol: '?' };
 }
 
+const safeFailureSummaries = new Set([
+  'Quality gate failure',
+  'Replay source or input integrity failure',
+  'Replay output equivalence failure',
+  'Run failed; review operator logs',
+]);
+
+export function failureSummary(run = {}) {
+  const summary = String(run.failure_summary ?? '').trim();
+  return safeFailureSummaries.has(summary) ? summary : null;
+}
+
 export function formatNumber(value) {
   return value !== null && value !== undefined && Number.isFinite(Number(value))
     ? numberFormatter.format(Number(value))
@@ -212,6 +227,38 @@ export function formatObserved(value) {
   if (value === null || value === undefined || value === '') return 'No value';
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numberFormatter.format(numeric) : String(value);
+}
+
+export function formatDriftValue(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+  return driftValueFormatter.format(Number(value));
+}
+
+export function formatDelta(value, kind = 'absolute') {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+  const numeric = Object.is(Number(value), -0) ? 0 : Number(value);
+  const prefix = numeric > 0 ? '+' : '';
+  if (kind === 'relative') return `${prefix}${(numeric * 100).toFixed(1)}%`;
+  return `${prefix}${driftValueFormatter.format(numeric)}`;
+}
+
+export function formatDriftThreshold(value, kind = 'absolute') {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
+  return kind === 'relative'
+    ? `±${(Number(value) * 100).toFixed(1)}%`
+    : `±${driftValueFormatter.format(Number(value))}`;
+}
+
+export function runIntervalLabel(run = {}) {
+  if (!run.data_interval_start && !run.data_interval_end) return 'Data interval —';
+  const start = formatDate(run.data_interval_start);
+  const end = formatDate(run.data_interval_end);
+  return start === end ? start : `${start} – ${end}`;
+}
+
+export function shortHash(value, length = 10) {
+  const hash = String(value ?? '');
+  return hash ? hash.slice(0, Math.max(4, length)) : '—';
 }
 
 export function shortRunId(value) {

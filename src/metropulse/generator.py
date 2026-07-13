@@ -32,15 +32,21 @@ class RawBatch:
     weather: Path
 
 
-def generate_raw_batch(raw_dir: Path, *, days: int = 45, seed: int = 20260611) -> RawBatch:
-    """Create deterministic raw source files that mimic an urban mobility feed."""
+def generate_raw_batch(
+    raw_dir: Path,
+    *,
+    days: int = 45,
+    seed: int = 20260611,
+    as_of_date: date | None = None,
+) -> RawBatch:
+    """Create deterministic raw source files for an inclusive snapshot end date."""
 
     if days < 2:
         raise ValueError("days must be at least 2")
 
     raw_dir.mkdir(parents=True, exist_ok=True)
     rng = random.Random(seed)
-    end_date = date.today() - timedelta(days=1)
+    end_date = as_of_date or date.today() - timedelta(days=1)
     start_date = end_date - timedelta(days=days - 1)
 
     stations_df = _build_stations(rng)

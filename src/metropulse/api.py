@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 
 import duckdb
 from fastapi import FastAPI, HTTPException, Query
+from fastapi import Path as PathParam
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -21,8 +22,11 @@ REQUIRED_TABLES = {
     "gold.hourly_mobility",
     "gold.lineage_edges",
     "ops.ingest_files",
+    "ops.dataset_profiles",
+    "ops.drift_results",
     "ops.pipeline_runs",
     "ops.quality_results",
+    "ops.relation_fingerprints",
     "silver.trip_enriched",
 }
 
@@ -204,26 +208,32 @@ def create_app(db_path: Path | str | None = None) -> FastAPI:
         )
 
     @app.get("/api/quality")
-    def quality() -> list[dict[str, Any]]:
+    def quality(
+        run_id: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+    ) -> list[dict[str, Any]]:
         return _rows(
             resolved_db_path,
             """
             SELECT check_name, status, observed_value, threshold, details, checked_at
             FROM ops.quality_results
-            WHERE run_id = (
-                SELECT run_id
-                FROM ops.pipeline_runs
-                WHERE published_at IS NOT NULL
-                ORDER BY published_at DESC
-                LIMIT 1
+            WHERE run_id = coalesce(
+                ?,
+                (
+                    SELECT run_id
+                    FROM ops.pipeline_runs
+                    WHERE published_at IS NOT NULL
+                    ORDER BY published_at DESC
+                    LIMIT 1
+                )
             )
             ORDER BY check_name
             """,
+            [run_id],
         )
 
     @app.get("/api/pipeline-runs")
     def pipeline_runs() -> list[dict[str, Any]]:
-        return _rows(
+        runs = _rows(
             resolved_db_path,
             """
             SELECT
@@ -232,6 +242,12 @@ def create_app(db_path: Path | str | None = None) -> FastAPI:
                 ended_at,
                 status,
                 days_requested,
+                seed,
+                data_interval_start,
+                data_interval_end,
+                source_mode,
+                replay_of_run_id,
+                parent_run_id,
                 raw_trips,
                 silver_trips,
                 rejected_trips,
@@ -239,12 +255,77 @@ def create_app(db_path: Path | str | None = None) -> FastAPI:
                 quality_passed,
                 quality_failed,
                 published_at,
+                contract_version,
+                input_set_sha256,
+                output_set_sha256,
                 error_message
             FROM ops.pipeline_runs
             ORDER BY started_at DESC
             LIMIT 8
             """,
         )
+        return [_public_run(run) for run in runs]
+
+    @app.get("/api/pipeline-runs/{run_id}")
+    def pipeline_run_detail(
+        run_id: Annotated[
+            str,
+            PathParam(pattern=r"^\d{14}-[0-9a-f]{8}$"),
+        ],
+    ) -> dict[str, Any]:
+        return _pipeline_run_detail(resolved_db_path, run_id)
+
+    @app.get("/api/drift")
+    def drift(
+        run_id: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+    ) -> dict[str, Any]:
+        selected = _single_row(
+            resolved_db_path,
+            """
+            SELECT run_id, contract_version
+            FROM ops.pipeline_runs
+            WHERE run_id = coalesce(
+                ?,
+                (
+                    SELECT run_id
+                    FROM ops.pipeline_runs
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                )
+            )
+            """,
+            [run_id],
+        )
+        results = _rows(
+            resolved_db_path,
+            """
+            SELECT
+                run_id,
+                baseline_run_id,
+                metric_name,
+                current_value,
+                baseline_value,
+                delta,
+                delta_kind,
+                threshold,
+                status,
+                checked_at
+            FROM ops.drift_results
+            WHERE run_id = ?
+            ORDER BY CASE WHEN status <> 'pass' THEN 0 ELSE 1 END, metric_name
+            """,
+            [selected["run_id"]],
+        )
+        failed_metrics = sum(item["status"] != "pass" for item in results)
+        return {
+            "run_id": selected["run_id"],
+            "baseline_run_id": results[0]["baseline_run_id"] if results else None,
+            "contract_version": selected["contract_version"],
+            "status": "no_baseline" if not results else "breached" if failed_metrics else "stable",
+            "checked_metrics": len(results),
+            "failed_metrics": failed_metrics,
+            "results": results,
+        }
 
     @app.get("/api/lineage")
     def lineage() -> list[dict[str, Any]]:
@@ -311,6 +392,168 @@ def create_app(db_path: Path | str | None = None) -> FastAPI:
         )
 
     return app
+
+
+def _pipeline_run_detail(db_path: Path, run_id: str) -> dict[str, Any]:
+    run_rows = _rows(
+        db_path,
+        """
+        WITH selected AS (
+            SELECT *
+            FROM ops.pipeline_runs
+            WHERE run_id = ?
+        ), previous AS (
+            SELECT candidate.*
+            FROM ops.pipeline_runs candidate, selected current_run
+            WHERE candidate.published_at IS NOT NULL
+              AND candidate.started_at < current_run.started_at
+            ORDER BY candidate.published_at DESC
+            LIMIT 1
+        ), current_manifest AS (
+            SELECT coalesce(sum(row_count), 0) AS source_rows,
+                   coalesce(sum(file_bytes), 0) AS source_bytes
+            FROM ops.ingest_files
+            WHERE run_id = ?
+        ), previous_manifest AS (
+            SELECT coalesce(sum(row_count), 0) AS source_rows,
+                   coalesce(sum(file_bytes), 0) AS source_bytes
+            FROM ops.ingest_files
+            WHERE run_id = (SELECT run_id FROM previous)
+        )
+        SELECT
+            selected.*,
+            round(date_diff('millisecond', selected.started_at, selected.ended_at) / 1000.0, 3)
+                AS runtime_seconds,
+            selected.run_id = (
+                SELECT run_id
+                FROM ops.pipeline_runs
+                WHERE published_at IS NOT NULL
+                ORDER BY published_at DESC
+                LIMIT 1
+            ) AS is_current_snapshot,
+            previous.run_id AS previous_published_run_id,
+            current_manifest.source_rows,
+            current_manifest.source_bytes,
+            current_manifest.source_rows - previous_manifest.source_rows AS source_rows_delta,
+            current_manifest.source_bytes - previous_manifest.source_bytes AS source_bytes_delta,
+            selected.silver_trips - previous.silver_trips AS silver_trips_delta,
+            selected.rejected_trips - previous.rejected_trips AS rejected_trips_delta,
+            selected.gold_hourly_rows - previous.gold_hourly_rows AS gold_hourly_rows_delta,
+            round(
+                (selected.silver_trips - previous.silver_trips) * 100.0
+                    / nullif(previous.silver_trips, 0),
+                2
+            ) AS silver_trips_delta_percent
+        FROM selected
+        CROSS JOIN current_manifest
+        CROSS JOIN previous_manifest
+        LEFT JOIN previous ON true
+        """,
+        [run_id, run_id],
+    )
+    if not run_rows:
+        raise HTTPException(status_code=404, detail=f"Pipeline run not found: {run_id}")
+
+    quality = _rows(
+        db_path,
+        """
+        SELECT check_name, status, observed_value, threshold, details, checked_at
+        FROM ops.quality_results
+        WHERE run_id = ?
+        ORDER BY check_name
+        """,
+        [run_id],
+    )
+    manifests = _rows(
+        db_path,
+        """
+        SELECT dataset_name, source_file, file_sha256, file_bytes, row_count, loaded_at
+        FROM ops.ingest_files
+        WHERE run_id = ?
+        ORDER BY dataset_name
+        """,
+        [run_id],
+    )
+    profiles = _rows(
+        db_path,
+        """
+        SELECT metric_name, metric_value, unit, recorded_at
+        FROM ops.dataset_profiles
+        WHERE run_id = ?
+        ORDER BY metric_name
+        """,
+        [run_id],
+    )
+    fingerprints = _rows(
+        db_path,
+        """
+        SELECT relation_name, row_count, fingerprint_sha256, recorded_at
+        FROM ops.relation_fingerprints
+        WHERE run_id = ?
+        ORDER BY relation_name
+        """,
+        [run_id],
+    )
+    drift = _rows(
+        db_path,
+        """
+        SELECT
+            baseline_run_id,
+            metric_name,
+            current_value,
+            baseline_value,
+            delta,
+            delta_kind,
+            threshold,
+            status,
+            checked_at
+        FROM ops.drift_results
+        WHERE run_id = ?
+        ORDER BY CASE WHEN status <> 'pass' THEN 0 ELSE 1 END, metric_name
+        """,
+        [run_id],
+    )
+    run = _public_run(run_rows[0])
+    return {
+        "run": run,
+        "quality": quality,
+        "manifests": manifests,
+        "profiles": profiles,
+        "fingerprints": fingerprints,
+        "drift": drift,
+    }
+
+
+def _public_run(run: dict[str, Any]) -> dict[str, Any]:
+    public_run = dict(run)
+    error_message = public_run.pop("error_message", None)
+    public_run["failure_summary"] = _failure_summary(
+        status=public_run.get("status"),
+        error_message=error_message,
+    )
+    return public_run
+
+
+def _failure_summary(status: Any, error_message: Any) -> str | None:
+    normalized_status = str(status or "").lower()
+    normalized_error = str(error_message or "").lower()
+    if normalized_status == "failed_quality" or normalized_error.startswith(
+        "quality checks failed:"
+    ):
+        return "Quality gate failure"
+    if "replay output fingerprint mismatch" in normalized_error or (
+        "replay" in normalized_error and "not equivalent" in normalized_error
+    ):
+        return "Replay output equivalence failure"
+    if normalized_error and (
+        "replay" in normalized_error
+        or "recorded input manifest fingerprint" in normalized_error
+        or "recorded configuration hash" in normalized_error
+    ):
+        return "Replay source or input integrity failure"
+    if normalized_status == "failed" or normalized_error:
+        return "Run failed; review operator logs"
+    return None
 
 
 def _cors_origins() -> list[str]:

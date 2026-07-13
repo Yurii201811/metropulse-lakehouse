@@ -6,14 +6,20 @@ import {
   chartGeometry,
   createRequestGate,
   escapeHtml,
+  failureSummary,
   formatBytes,
   formatDate,
+  formatDelta,
+  formatDriftThreshold,
+  formatDriftValue,
   formatDuration,
   formatNumber,
   formatObserved,
   formatPercent,
   prettyName,
   reconcileActiveFilters,
+  runIntervalLabel,
+  shortHash,
   shortRunId,
   statusDescriptor,
 } from '../src/dashboard-core.js';
@@ -47,6 +53,12 @@ test('request gate rejects stale work within a scope without affecting other sco
   assert.equal(gate.isCurrent('analytics', firstAnalytics), false);
   assert.equal(gate.isCurrent('analytics', latestAnalytics), true);
   assert.equal(gate.isCurrent('system', system), true);
+
+  const firstDetail = gate.begin('run-detail');
+  const latestDetail = gate.begin('run-detail');
+  assert.equal(gate.isCurrent('run-detail', firstDetail), false);
+  assert.equal(gate.isCurrent('run-detail', latestDetail), true);
+  assert.equal(gate.isCurrent('analytics', latestAnalytics), true);
 });
 
 test('refreshed filter metadata preserves valid selections and removes stale ones', () => {
@@ -116,6 +128,18 @@ test('run status distinguishes a published snapshot from failure', () => {
   assert.equal(formatNumber(null), '—');
 });
 
+test('failure summaries render only the API safe vocabulary and ignore raw operator errors', () => {
+  assert.equal(
+    failureSummary({
+      failure_summary: 'Replay source or input integrity failure',
+      error_message: '/private/raw/source.csv',
+    }),
+    'Replay source or input integrity failure',
+  );
+  assert.equal(failureSummary({ failure_summary: '<script>unsafe</script>' }), null);
+  assert.equal(failureSummary({ error_message: '/private/raw/source.csv' }), null);
+});
+
 test('date-only values are formatted without local timezone drift', () => {
   assert.equal(formatDate('2026-05-29'), '29 May 2026');
 });
@@ -131,4 +155,24 @@ test('API identifiers remain readable without losing run traceability', () => {
   assert.equal(prettyName('failed_quality'), 'Failed Quality');
   assert.equal(formatObserved(null), 'No value');
   assert.equal(shortRunId('20260713093503-b57b5eeb'), 'b57b5eeb');
+});
+
+test('drift formatters preserve direction, comparison kind, and missing values', () => {
+  assert.equal(formatDriftValue(12.34567), '12.346');
+  assert.equal(formatDriftValue(null), '—');
+  assert.equal(formatDelta(0.125, 'relative'), '+12.5%');
+  assert.equal(formatDelta(-0.025, 'absolute'), '-0.025');
+  assert.equal(formatDelta(null, 'relative'), '—');
+  assert.equal(formatDriftThreshold(0.2, 'relative'), '±20.0%');
+  assert.equal(formatDriftThreshold(0.02, 'absolute'), '±0.02');
+});
+
+test('run provenance helpers keep intervals and hashes compact', () => {
+  assert.equal(
+    runIntervalLabel({ data_interval_start: '2026-07-01', data_interval_end: '2026-07-12' }),
+    '01 Jul 2026 – 12 Jul 2026',
+  );
+  assert.equal(runIntervalLabel({}), 'Data interval —');
+  assert.equal(shortHash('abcdef0123456789'), 'abcdef0123');
+  assert.equal(shortHash(null), '—');
 });

@@ -158,7 +158,7 @@ def test_all_rejected_batch_records_failed_quality_evidence(
     finally:
         con.close()
 
-    freshness = next(check for check in checks if check[0] == "latest_trip_freshness_days")
+    freshness = next(check for check in checks if check[0] == "data_interval_end_gap_days")
     assert run[1] == "failed_quality"
-    assert run[2] + run[3] == len(checks) >= 12
-    assert freshness == ("latest_trip_freshness_days", "fail", None)
+    assert run[2] + run[3] == len(checks) >= 13
+    assert freshness == ("data_interval_end_gap_days", "fail", None)

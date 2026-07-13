@@ -1,19 +1,19 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77.0.3", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "metropulse-lakehouse"
-version = "0.2.0"
+version = "0.3.0"
 description = "Observable urban mobility lakehouse with atomic snapshots, data contracts, FastAPI, and an operations dashboard."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Yurii Bakurov" }]
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 keywords = ["data-engineering", "duckdb", "fastapi", "lakehouse", "observability"]
 classifiers = [
   "Development Status :: 4 - Beta",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: MacOS",
   "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3",

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from typing import Protocol
 
 import duckdb
 
@@ -15,7 +17,16 @@ class QualityCheck:
     details: str
 
 
-def run_quality_checks(con: duckdb.DuckDBPyConnection) -> list[QualityCheck]:
+class DriftOutcome(Protocol):
+    status: str
+
+
+def run_quality_checks(
+    con: duckdb.DuckDBPyConnection,
+    *,
+    expected_end_date: date,
+    drift_results: Sequence[DriftOutcome] | None = None,
+) -> list[QualityCheck]:
     checks = [
         _min_count(con, "raw_trips_loaded", "bronze.trips", 1),
         _min_count(con, "silver_trips_loaded", "silver.trips", 1),
@@ -90,12 +101,8 @@ def run_quality_checks(con: duckdb.DuckDBPyConnection) -> list[QualityCheck]:
             "SELECT total_trips FROM gold.dashboard_summary",
             1,
         ),
-        _at_most(
-            con,
-            "latest_trip_freshness_days",
-            "SELECT date_diff('day', max(trip_date), current_date) FROM silver.trip_enriched",
-            5,
-        ),
+        _interval_end_check(con, expected_end_date),
+        _drift_check(drift_results),
     ]
 
     return checks
@@ -159,6 +166,45 @@ def _at_most(con: duckdb.DuckDBPyConnection, name: str, sql: str, threshold: flo
     observed = _observed(con.execute(sql).fetchone()[0])
     status = "pass" if observed is not None and observed <= threshold else "fail"
     return QualityCheck(name, status, observed, f"<= {threshold}", "Maximum acceptable value")
+
+
+def _interval_end_check(
+    con: duckdb.DuckDBPyConnection,
+    expected_end_date: date,
+) -> QualityCheck:
+    observed = _observed(
+        con.execute(
+            "SELECT date_diff('day', max(trip_date), ?::DATE) FROM silver.trip_enriched",
+            [expected_end_date],
+        ).fetchone()[0]
+    )
+    status = "pass" if observed == 0 else "fail"
+    return QualityCheck(
+        "data_interval_end_gap_days",
+        status,
+        observed,
+        "= 0",
+        f"Latest accepted trip date must equal the declared interval end {expected_end_date}",
+    )
+
+
+def _drift_check(drift_results: Sequence[DriftOutcome] | None) -> QualityCheck:
+    if drift_results is None:
+        return QualityCheck(
+            "cross_snapshot_drift",
+            "pass",
+            0.0,
+            "= 0 breached metrics",
+            "No compatible published baseline exists yet",
+        )
+    failed_count = sum(result.status != "pass" for result in drift_results)
+    return QualityCheck(
+        "cross_snapshot_drift",
+        "pass" if failed_count == 0 else "fail",
+        float(failed_count),
+        "= 0 breached metrics",
+        f"Compared {len(drift_results)} profiled metrics with the compatible baseline",
+    )
 
 
 def _observed(value: object) -> float | None:

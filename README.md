@@ -4,32 +4,38 @@
 [![Python 3.11–3.14](https://img.shields.io/badge/Python-3.11%E2%80%933.14-2563eb)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-2563eb.svg)](LICENSE)
 
-MetroPulse is a compact, production-shaped data platform for an urban mobility operator. It generates deterministic trip, payment, station, and weather feeds; records file-level provenance; builds bronze, silver, and gold models in DuckDB; enforces row-level contracts and publication gates; exposes the published snapshot through FastAPI; and renders it in a dependency-free operations console.
+MetroPulse is a compact, production-shaped data platform for an urban mobility operator. It generates or replays deterministic trip, payment, station, and weather snapshots; records file- and relation-level fingerprints; builds bronze, silver, and gold models in DuckDB; detects cross-snapshot drift; enforces row-level contracts and publication gates; exposes the evidence through FastAPI; and renders it in a dependency-free operations console.
 
-![MetroPulse operations console](docs/dashboard-screenshot.png)
+![MetroPulse snapshot observability console](docs/dashboard-observability-screenshot.png)
 
 ## What makes it production-shaped
 
 - **Non-blocking atomic publication:** each run builds a copy-on-write DuckDB candidate under a single-publisher lock, commits internally, then atomically swaps the file. API readers stay on the previous file until that swap.
 - **Explicit contracts:** invalid trips and payments receive a rejection reason instead of disappearing during a filter.
-- **Verifiable inputs:** every run writes source files to `data/raw/runs/<run_id>/` and records path, SHA-256, byte size, and row count in `ops.ingest_files`.
+- **Verifiable inputs:** generated runs write to `data/raw/runs/<run_id>/`; every generated or replayed run records path, SHA-256, byte size, and row count in `ops.ingest_files`.
+- **Replayable snapshots:** `--as-of` fixes the data interval, while `metropulse replay` verifies the original four-file manifest, stages private copies, and requires exact input and output fingerprints before publishing the rebuilt `snapshot-v1` contract.
+- **Drift-aware publication:** 12 dataset profiles feed nine thresholded comparisons; six business-column relation fingerprints and input/output SHA-256 values make replay equivalence inspectable.
 - **Cardinality protection:** duplicate trip payments are quarantined before the fact join, preventing revenue and row multiplication.
 - **Operational API:** separate liveness and readiness endpoints, bounded parameters, typed filters, snapshot metadata, and safe 503 responses.
 - **Resilient console:** filters, truthful hourly axes, accessible data tables, actual lineage edges, a command menu, responsive station cards, and partial-failure recovery.
-- **Repeatable verification:** 13 Python tests, 14 frontend/server tests, Ruff, an isolated 45-day pipeline run, and Python 3.11–3.14 CI coverage.
+- **Repeatable verification:** 35 Python tests, 17 frontend/server tests, Ruff, an isolated 45-day pipeline run, and Python 3.11–3.14 CI coverage.
+- **Release contract:** package, API, dashboard, and changelog versions stay aligned; CI builds and checks the wheel/sdist, installs the wheel cleanly, and runs a fixed-date pipeline smoke test.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  RAW["Run-scoped CSV sources"] --> MANIFEST["SHA-256 source manifest"]
+  MODE["Generate with --as-of or replay --run-id"] --> RAW["Run-scoped CSV sources"]
+  RAW --> MANIFEST["Four-file SHA-256 manifest"]
   RAW --> CANDIDATE["Copy-on-write DuckDB candidate"]
   CANDIDATE --> BRONZE["Bronze source-shaped tables"]
   BRONZE --> CONTRACTS["Trip and payment contracts"]
   CONTRACTS --> REJECTS["Typed rejection tables"]
   CONTRACTS --> SILVER["Silver accepted and enriched facts"]
   SILVER --> GOLD["Gold analytics marts"]
-  GOLD --> QUALITY["12 publication checks"]
+  GOLD --> PROFILE["12 profiles + 6 relation fingerprints"]
+  PROFILE --> DRIFT["9 thresholded drift comparisons"]
+  DRIFT --> QUALITY["13 publication checks"]
   QUALITY -->|"pass"| COMMIT["Commit candidate transaction"]
   QUALITY -->|"fail"| ROLLBACK["Rollback candidate snapshot"]
   COMMIT --> SWAP["Atomic published-file swap"]
@@ -54,7 +60,7 @@ Requirements:
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
-metropulse run --days 45 --seed 20260611
+metropulse run --days 45 --seed 20260611 --as-of 2026-07-12
 metropulse status
 npm --prefix apps/dashboard run build
 ```
@@ -85,10 +91,10 @@ The 45-day run verified on **2026-07-13** with seed `20260611` produced:
 | Weather hours | 1,080 |
 | Gold hourly rows | 7,731 |
 | Source manifests | 4 |
-| Quality checks | 12 / 12 passing |
+| Quality checks | 13 / 13 passing |
 | Trip / payment rejects | 0 / 0 |
 
-Because the generator ends at yesterday, dates move with the day a run is executed; for a fixed execution date and window, the seed is deterministic.
+This reference window is pinned with `--as-of 2026-07-12`. The same days, seed, and inclusive end date reproduce the same source hashes even when the command is executed later.
 
 ## Commands
 
@@ -105,6 +111,15 @@ make dashboard  # build and serve the console on 127.0.0.1:5173
 
 `bash scripts/verify.sh` uses a temporary project root by default, so verification does not overwrite your working warehouse. Set `METROPULSE_VERIFY_ROOT` to preserve its generated evidence.
 
+For an explicitly dated snapshot and a verified replay:
+
+```bash
+metropulse run --days 45 --seed 20260611 --as-of 2026-07-12
+metropulse replay --run-id RUN_ID
+```
+
+`--as-of` is the inclusive data-interval end and cannot be later than yesterday. Replay accepts the source run ID only; it inherits that run's days, seed, interval, and `snapshot-v1` contract.
+
 ## Data model
 
 | Layer | Main relations | Responsibility |
@@ -113,7 +128,7 @@ make dashboard  # build and serve the console on 127.0.0.1:5173
 | Silver | `silver.trips`, `payments`, `stations`, `weather_hourly`, `trip_enriched` | Typed accepted records and analytical joins |
 | Rejections | `silver.trip_rejections`, `payment_rejections` | Contract failures with explicit rejection reasons |
 | Gold | `hourly_mobility`, `daily_station_performance`, `revenue_by_zone`, `dashboard_summary`, `lineage_edges` | Consumer-shaped aggregates and lineage |
-| Ops | `pipeline_runs`, `quality_results`, `ingest_files` | Run state, publication timestamps, gates, errors, and source evidence |
+| Ops | `pipeline_runs`, `quality_results`, `ingest_files`, `dataset_profiles`, `relation_fingerprints`, `drift_results` | Run identity, publication gates, source/output evidence, profiles, and drift comparisons |
 
 The complete contracts and rejection reasons are documented in [docs/data-contracts.md](docs/data-contracts.md).
 
@@ -127,10 +142,14 @@ The complete contracts and rejection reasons are documented in [docs/data-contra
 | `GET /api/timeseries` | Filtered hourly trips and revenue |
 | `GET /api/stations`, `/api/zones` | Filtered station and zone aggregates |
 | `GET /api/filters` | Available date, zone, and rider dimensions |
-| `GET /api/pipeline-runs`, `/api/quality` | Operational run and gate history |
-| `GET /api/ingest-files`, `/api/lineage` | Source manifests and source-to-target edges |
+| `GET /api/pipeline-runs`, `/api/pipeline-runs/{run_id}` | Run history and one-run investigation bundle |
+| `GET /api/quality`, `/api/ingest-files` | Current or historical gate and source-manifest evidence via `run_id` |
+| `GET /api/drift` | Current or historical profile-drift comparison via `run_id` |
+| `GET /api/lineage` | Source-to-target edges |
 
 Analytics endpoints accept `start_date`, `end_date`, `zone_id`, and `rider_type`. Station results additionally enforce `1 <= limit <= 50`.
+
+The run-detail response groups metadata, quality outcomes, manifests, 12 profiles, six relation fingerprints, and drift results for one investigation. The console exposes the same evidence through its drift and run-investigation views.
 
 ## Configuration
 
@@ -159,7 +178,7 @@ The application intentionally does not parse `.env` files automatically.
 ├── docs/                  # Architecture, contracts, screenshots, interview material
 ├── scripts/verify.sh      # Isolated end-to-end verifier
 ├── src/metropulse/        # Generator, ingestion, SQL models, quality, API, CLI
-├── tests/                 # Pipeline, rollback, quality, and API tests
+├── tests/                 # Pipeline, replay, rollback, drift, quality, and API tests
 └── tokens.css             # Hallmark Cobalt design tokens
 ```
 
@@ -175,3 +194,7 @@ The application intentionally does not parse `.env` files automatically.
 ## License
 
 [MIT](LICENSE) © Yurii Bakurov
+
+## Current scope
+
+MetroPulse 0.3.0 remains a synthetic, full-refresh local demonstration. It uses one DuckDB file, illustrative drift thresholds, and same-contract (`snapshot-v1`) replay. It does not yet provide incremental ingestion, a scheduler, containers, cloud storage or compute, authentication, or alert delivery.

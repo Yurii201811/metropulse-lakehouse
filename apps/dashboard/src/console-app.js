@@ -3,17 +3,23 @@ import {
   chartGeometry,
   createRequestGate,
   escapeHtml,
+  failureSummary,
   formatBytes,
   formatCompactNumber,
   formatCurrency,
   formatDate,
   formatDateTime,
+  formatDelta,
+  formatDriftThreshold,
+  formatDriftValue,
   formatDuration,
   formatNumber,
   formatObserved,
   formatPercent,
   prettyName,
   reconcileActiveFilters,
+  runIntervalLabel,
+  shortHash,
   shortRunId,
   statusDescriptor,
 } from './dashboard-core.js';
@@ -35,6 +41,7 @@ const endpoints = {
   lineage: '/api/lineage',
   filters: '/api/filters',
   manifests: '/api/ingest-files',
+  drift: '/api/drift',
 };
 
 const analyticsKeys = ['summary', 'timeseries', 'stations', 'zones'];
@@ -49,6 +56,10 @@ const state = {
   chartWidth: null,
   commandIndex: 0,
   commandTrigger: null,
+  selectedRunId: null,
+  runDetail: null,
+  runDetailError: null,
+  runDetailLoading: false,
 };
 
 const chartDateFormatter = new Intl.DateTimeFormat('en-GB', {
@@ -97,6 +108,37 @@ async function getJson(key, query = '') {
   }
 }
 
+async function getRunDetail(runId) {
+  const url = `${API_BASE}${endpoints.runs}/${encodeURIComponent(runId)}`;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) {
+      const detail = typeof payload?.detail === 'string' ? payload.detail : '';
+      throw new Error(detail || `${endpoints.runs}/{run_id} returned HTTP ${response.status}`);
+    }
+    return payload;
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error(`${endpoints.runs}/{run_id} timed out after 10 seconds.`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 async function loadKeys(keys, query = '', request = null) {
   const results = await Promise.allSettled(keys.map((key) => getJson(key, query)));
   if (request && !requestGate.isCurrent(request.scope, request.generation)) return false;
@@ -125,6 +167,8 @@ function renderAll() {
   renderTimeseries();
   renderRuns();
   renderQuality();
+  renderDrift();
+  renderRunInvestigation();
   renderStations();
   renderZones();
   renderManifests();
@@ -137,6 +181,8 @@ function renderOperationalData() {
   renderFilters();
   renderRuns();
   renderQuality();
+  renderDrift();
+  renderRunInvestigation();
   renderManifests();
   renderLineage();
   renderNotice();
@@ -459,32 +505,63 @@ function renderRuns() {
       const duration = run.ended_at
         ? Math.max(0, (new Date(run.ended_at) - new Date(run.started_at)) / 1000)
         : null;
+      const selected = state.selectedRunId === run.run_id;
+      const sourceMode = prettyName(run.source_mode || 'generated');
+      const failure = failureSummary(run);
       return `
-        <article class="run-row ${escapeHtml(descriptor.tone)}">
-          <span class="run-state" aria-hidden="true">${escapeHtml(descriptor.symbol)}</span>
-          <div class="run-main">
-            <div class="run-title">
-              <strong>${escapeHtml(descriptor.label)} · ${escapeHtml(shortRunId(run.run_id))}</strong>
-              <time datetime="${escapeHtml(run.started_at)}">${escapeHtml(formatDateTime(run.started_at))}</time>
-            </div>
-            <div class="run-details">
-              <span>${escapeHtml(formatNumber(run.silver_trips))} accepted</span>
-              <span>${escapeHtml(formatNumber(run.rejected_trips))} rejected</span>
-              <span>${escapeHtml(formatNumber(run.quality_passed))}/${escapeHtml(
-                formatNumber(Number(run.quality_passed || 0) + Number(run.quality_failed || 0)),
-              )} checks</span>
-              <span>${escapeHtml(formatDuration(duration))}</span>
-            </div>
-            ${
-              run.error_message
-                ? `<div class="run-details"><span>${escapeHtml(run.error_message)}</span></div>`
-                : ''
-            }
-          </div>
+        <article class="run-row ${escapeHtml(descriptor.tone)}${selected ? ' selected' : ''}">
+          <button
+            class="run-control"
+            type="button"
+            data-run-id="${escapeHtml(run.run_id)}"
+            aria-expanded="${selected}"
+            aria-controls="run-investigation"
+          >
+            <span class="run-state" aria-hidden="true">${escapeHtml(descriptor.symbol)}</span>
+            <span class="run-main">
+              <span class="run-title">
+                <strong>${escapeHtml(descriptor.label)} · ${escapeHtml(shortRunId(run.run_id))}</strong>
+                <time datetime="${escapeHtml(run.started_at)}">${escapeHtml(
+                  formatDateTime(run.started_at),
+                )}</time>
+              </span>
+              <span class="run-details">
+                <span>${escapeHtml(formatNumber(run.silver_trips))} accepted</span>
+                <span>${escapeHtml(formatNumber(run.rejected_trips))} rejected</span>
+                <span>${escapeHtml(formatNumber(run.quality_passed))}/${escapeHtml(
+                  formatNumber(Number(run.quality_passed || 0) + Number(run.quality_failed || 0)),
+                )} checks</span>
+                <span>${escapeHtml(formatDuration(duration))}</span>
+              </span>
+              <span class="run-provenance">
+                <span>${escapeHtml(sourceMode)}</span>
+                <span>${escapeHtml(runIntervalLabel(run))}</span>
+                ${
+                  run.replay_of_run_id
+                    ? `<span>Replay of ${escapeHtml(shortRunId(run.replay_of_run_id))}</span>`
+                    : ''
+                }
+                <span>Input <code title="${escapeHtml(run.input_set_sha256 || '')}">${escapeHtml(
+                  shortHash(run.input_set_sha256),
+                )}</code></span>
+                <span>Output <code title="${escapeHtml(run.output_set_sha256 || '')}">${escapeHtml(
+                  shortHash(run.output_set_sha256),
+                )}</code></span>
+              </span>
+              ${
+                failure ? `<span class="run-error">${escapeHtml(failure)}</span>` : ''
+              }
+            </span>
+            <span class="run-disclosure" aria-hidden="true">${selected ? 'Close' : 'Inspect'}</span>
+          </button>
         </article>
       `;
     })
     .join('');
+
+  container.querySelectorAll('[data-run-id]').forEach((button) => {
+    button.addEventListener('click', () => selectRun(button.dataset.runId));
+  });
 }
 
 function renderQuality() {
@@ -524,6 +601,310 @@ function renderQuality() {
       `,
     )
     .join('');
+}
+
+function renderDrift() {
+  const container = element('#drift');
+  const summary = element('#drift-summary');
+  const status = element('#drift-status');
+  const drift = state.data.drift;
+
+  if (!drift) {
+    summary.textContent = 'Comparison evidence unavailable';
+    status.className = 'comparison-status unavailable';
+    status.textContent = 'Unavailable';
+    container.innerHTML = panelError('Snapshot drift unavailable', state.errors.get('drift'));
+    return;
+  }
+
+  const results = Array.isArray(drift.results) ? drift.results : [];
+  const failed = Number(drift.failed_metrics || results.filter((result) => result.status !== 'pass').length);
+  const checked = Number(drift.checked_metrics || results.length);
+  const passed = Math.max(0, checked - failed);
+  const stable = drift.status === 'pass' || (checked > 0 && failed === 0);
+
+  status.className = `comparison-status ${stable ? 'pass' : checked ? 'fail' : 'unavailable'}`;
+  status.textContent = checked ? (stable ? 'Stable' : `${failed} breached`) : 'No baseline';
+  summary.textContent = drift.baseline_run_id
+    ? `${passed} of ${checked} metrics stable · ${shortRunId(drift.run_id)} vs ${shortRunId(
+        drift.baseline_run_id,
+      )}`
+    : 'No compatible published baseline yet';
+
+  if (!checked || results.length === 0) {
+    container.innerHTML = emptyState(
+      'No drift comparison yet',
+      'A compatible prior snapshot is required before drift can be measured.',
+    );
+    return;
+  }
+
+  container.innerHTML = driftTable(results, 'Latest snapshot drift metrics');
+}
+
+function driftTable(results, caption) {
+  return `
+    <div class="table-wrap drift-table-wrap" role="region" aria-label="${escapeHtml(caption)}" tabindex="0">
+      <table class="drift-table">
+        <caption class="visually-hidden">${escapeHtml(caption)}</caption>
+        <thead>
+          <tr>
+            <th>Metric</th>
+            <th class="numeric">Current</th>
+            <th class="numeric">Baseline</th>
+            <th class="numeric">Change</th>
+            <th class="numeric">Gate</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${results
+            .map((result) => {
+              const passed = result.status === 'pass';
+              return `
+                <tr>
+                  <td><strong>${escapeHtml(prettyName(result.metric_name))}</strong></td>
+                  <td class="numeric">${escapeHtml(formatDriftValue(result.current_value))}</td>
+                  <td class="numeric">${escapeHtml(formatDriftValue(result.baseline_value))}</td>
+                  <td class="numeric data-code">${escapeHtml(
+                    formatDelta(result.delta, result.delta_kind),
+                  )}</td>
+                  <td class="numeric data-code">${escapeHtml(
+                    formatDriftThreshold(result.threshold, result.delta_kind),
+                  )}</td>
+                  <td><span class="evidence-status ${passed ? 'pass' : 'fail'}">${
+                    passed ? 'Stable' : 'Breached'
+                  }</span></td>
+                </tr>
+              `;
+            })
+            .join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderRunInvestigation() {
+  const panel = element('#run-investigation');
+  const content = element('#run-investigation-content');
+  const summary = element('#run-investigation-summary');
+
+  panel.classList.toggle('hidden', !state.selectedRunId);
+  panel.toggleAttribute('aria-busy', Boolean(state.selectedRunId && state.runDetailLoading));
+  if (!state.selectedRunId) {
+    summary.textContent = 'Select a run to inspect its evidence';
+    content.innerHTML = '';
+    return;
+  }
+
+  if (state.runDetailLoading) {
+    summary.textContent = `Loading run ${shortRunId(state.selectedRunId)}`;
+    content.innerHTML = '<div class="skeleton detail-skeleton"></div>';
+    return;
+  }
+
+  if (state.runDetailError) {
+    summary.textContent = `Run ${shortRunId(state.selectedRunId)} could not be loaded`;
+    content.innerHTML = `${panelError('Run evidence unavailable', state.runDetailError)}
+      <div class="investigation-actions">
+        <button class="button-secondary compact-button" type="button" data-run-detail-retry>Retry</button>
+      </div>`;
+    content.querySelector('[data-run-detail-retry]')?.addEventListener('click', () => {
+      selectRun(state.selectedRunId, { force: true });
+    });
+    return;
+  }
+
+  const detail = state.runDetail;
+  if (!detail?.run) return;
+  const run = detail.run;
+  const quality = Array.isArray(detail.quality) ? detail.quality : [];
+  const manifests = Array.isArray(detail.manifests) ? detail.manifests : [];
+  const profiles = Array.isArray(detail.profiles) ? detail.profiles : [];
+  const fingerprints = Array.isArray(detail.fingerprints) ? detail.fingerprints : [];
+  const drift = Array.isArray(detail.drift) ? detail.drift : [];
+  const baselineRunId = drift[0]?.baseline_run_id || run.previous_published_run_id;
+  const descriptor = statusDescriptor(run);
+  const failure = failureSummary(run);
+
+  summary.textContent = `${descriptor.label} · ${prettyName(run.source_mode || 'generated')} · ${runIntervalLabel(
+    run,
+  )}`;
+  content.innerHTML = `
+    <div class="investigation-ledger">
+      ${investigationFact('Run', shortRunId(run.run_id), run.run_id)}
+      ${investigationFact('Runtime', formatDuration(run.runtime_seconds))}
+      ${investigationFact('Snapshot', run.is_current_snapshot ? 'Current published' : 'Historical')}
+      ${investigationFact('Source files', formatNumber(manifests.length))}
+      ${investigationFact('Contract', run.contract_version || '—')}
+      ${investigationFact('Code', run.code_version || '—')}
+    </div>
+    ${failure ? `<p class="run-error">${escapeHtml(failure)}</p>` : ''}
+
+    <div class="investigation-grid">
+      <section class="evidence-block" aria-labelledby="provenance-title">
+        <h4 id="provenance-title">Provenance</h4>
+        <dl class="provenance-list">
+          ${provenanceItem('Source mode', prettyName(run.source_mode || 'generated'))}
+          ${provenanceItem('Data interval', runIntervalLabel(run))}
+          ${provenanceItem('Replay of', shortRunId(run.replay_of_run_id), run.replay_of_run_id)}
+          ${provenanceItem(
+            'Previous published',
+            shortRunId(run.previous_published_run_id),
+            run.previous_published_run_id,
+          )}
+          ${provenanceItem('Input set', shortHash(run.input_set_sha256, 16), run.input_set_sha256)}
+          ${provenanceItem('Output set', shortHash(run.output_set_sha256, 16), run.output_set_sha256)}
+          ${provenanceItem('Config', shortHash(run.config_sha256, 16), run.config_sha256)}
+        </dl>
+      </section>
+
+      <section class="evidence-block" aria-labelledby="investigation-quality-title">
+        <h4 id="investigation-quality-title">Quality · ${escapeHtml(
+          `${quality.filter((check) => check.status === 'pass').length}/${quality.length}`,
+        )}</h4>
+        ${
+          quality.length
+            ? `<ul class="evidence-list">${quality
+                .map(
+                  (check) => `<li>
+                    <span
+                      class="evidence-status ${check.status === 'pass' ? 'pass' : 'fail'}"
+                      aria-label="${check.status === 'pass' ? 'Passed' : 'Failed'}"
+                    >${check.status === 'pass' ? '✓' : '!'}</span>
+                    <span><strong>${escapeHtml(prettyName(check.check_name))}</strong><small>Observed ${escapeHtml(
+                      formatObserved(check.observed_value),
+                    )} · gate ${escapeHtml(check.threshold)}</small></span>
+                  </li>`,
+                )
+                .join('')}</ul>`
+            : emptyState('No quality evidence', 'This run has no recorded quality checks.')
+        }
+      </section>
+
+      <section class="evidence-block" aria-labelledby="fingerprints-title">
+        <h4 id="fingerprints-title">Relation fingerprints</h4>
+        ${
+          fingerprints.length
+            ? `<ul class="fingerprint-list">${fingerprints
+                .map(
+                  (fingerprint) => `<li>
+                    <span><strong>${escapeHtml(fingerprint.relation_name)}</strong><small>${escapeHtml(
+                      formatNumber(fingerprint.row_count),
+                    )} rows</small></span>
+                    <code title="${escapeHtml(fingerprint.fingerprint_sha256)}">${escapeHtml(
+                      shortHash(fingerprint.fingerprint_sha256, 16),
+                    )}</code>
+                  </li>`,
+                )
+                .join('')}</ul>`
+            : emptyState('No fingerprints', 'This run has no recorded relation fingerprints.')
+        }
+      </section>
+
+      <section class="evidence-block" aria-labelledby="profiles-title">
+        <h4 id="profiles-title">Snapshot profile</h4>
+        ${
+          profiles.length
+            ? `<dl class="profile-list">${profiles
+                .map(
+                  (profile) => `<div><dt>${escapeHtml(prettyName(profile.metric_name))}</dt><dd>${escapeHtml(
+                    formatDriftValue(profile.metric_value),
+                  )}${profile.unit ? ` <small>${escapeHtml(profile.unit)}</small>` : ''}</dd></div>`,
+                )
+                .join('')}</dl>`
+            : emptyState('No profile metrics', 'This run has no recorded snapshot profile.')
+        }
+      </section>
+    </div>
+
+    <section class="prior-comparison" aria-labelledby="prior-comparison-title">
+      <div class="evidence-heading">
+        <h4 id="prior-comparison-title">Prior comparison</h4>
+        <span>${escapeHtml(
+          baselineRunId
+            ? `Against ${shortRunId(baselineRunId)}`
+            : 'No compatible prior run',
+        )}</span>
+      </div>
+      ${
+        drift.length
+          ? driftTable(drift, `Drift comparison for run ${shortRunId(run.run_id)}`)
+          : emptyState('No prior comparison', 'A compatible published run is required for drift evidence.')
+      }
+    </section>
+  `;
+}
+
+function investigationFact(label, value, title = '') {
+  return `<div><span>${escapeHtml(label)}</span><strong${title ? ` title="${escapeHtml(title)}"` : ''}>${escapeHtml(
+    value,
+  )}</strong></div>`;
+}
+
+function provenanceItem(label, value, title = '') {
+  return `<div><dt>${escapeHtml(label)}</dt><dd${title ? ` title="${escapeHtml(title)}"` : ''}>${escapeHtml(
+    value,
+  )}</dd></div>`;
+}
+
+function syncRunSelection() {
+  document.querySelectorAll('[data-run-id]').forEach((button) => {
+    const selected = button.dataset.runId === state.selectedRunId;
+    button.setAttribute('aria-expanded', String(selected));
+    button.toggleAttribute('aria-busy', selected && state.runDetailLoading);
+    button.closest('.run-row')?.classList.toggle('selected', selected);
+    const disclosure = button.querySelector('.run-disclosure');
+    if (disclosure) disclosure.textContent = selected ? 'Close' : 'Inspect';
+  });
+}
+
+async function selectRun(runId, { force = false } = {}) {
+  if (!force && state.selectedRunId === runId) {
+    closeRunInvestigation();
+    return;
+  }
+
+  state.selectedRunId = runId;
+  state.runDetail = null;
+  state.runDetailError = null;
+  state.runDetailLoading = true;
+  syncRunSelection();
+  renderRunInvestigation();
+
+  const request = beginRequest('run-detail');
+  try {
+    const detail = await getRunDetail(runId);
+    if (!requestGate.isCurrent(request.scope, request.generation)) return;
+    state.runDetail = detail;
+  } catch (error) {
+    if (!requestGate.isCurrent(request.scope, request.generation)) return;
+    state.runDetailError = error instanceof Error ? error : new Error(String(error));
+  } finally {
+    if (requestGate.isCurrent(request.scope, request.generation)) {
+      state.runDetailLoading = false;
+      syncRunSelection();
+      renderRunInvestigation();
+      element('#run-investigation-title').focus();
+    }
+  }
+}
+
+function closeRunInvestigation() {
+  const runId = state.selectedRunId;
+  requestGate.begin('run-detail');
+  state.selectedRunId = null;
+  state.runDetail = null;
+  state.runDetailError = null;
+  state.runDetailLoading = false;
+  syncRunSelection();
+  renderRunInvestigation();
+  if (runId) {
+    [...document.querySelectorAll('[data-run-id]')]
+      .find((button) => button.dataset.runId === runId)
+      ?.focus();
+  }
 }
 
 function renderStations() {
@@ -1026,6 +1407,7 @@ function setupInteractions() {
   element('#filter-form').addEventListener('submit', applyFilters);
   element('#reset-filters').addEventListener('click', resetFilters);
   element('#chart-table-toggle').addEventListener('click', toggleChartTable);
+  element('#run-investigation-close').addEventListener('click', closeRunInvestigation);
   setupNavigation();
   setupCommands();
   let chartResizeFrame = null;

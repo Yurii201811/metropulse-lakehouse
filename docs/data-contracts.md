@@ -1,18 +1,19 @@
 # Data contracts
 
-MetroPulse separates **candidate data** from the **published snapshot**. Each run generates source files under `data/raw/runs/<run_id>/`, copies the published DuckDB file into an isolated candidate, evaluates that candidate inside one transaction, and atomically replaces the published file only after the run state is complete.
+MetroPulse separates **candidate data** from the **published snapshot**. A generated run writes source files under `data/raw/runs/<run_id>/`; a replay verifies one prior run's immutable files and stages the same bytes under its own run ID. Both copy the published DuckDB file into an isolated candidate, evaluate that candidate inside one transaction, and atomically replace the published file only after the run state is complete.
 
 ## Publication policy
 
 - `fail_on_quality=true` is the default.
 - A non-blocking publisher lock prevents two candidate files from racing to replace the published path.
-- Any failed check rolls back candidate bronze, silver, gold, rejection, manifest, and quality-table changes.
-- Failed-run metadata, check outcomes, and source manifests are then persisted in `ops` outside the rolled-back transaction.
+- Any failed check, including cross-snapshot drift, rolls back candidate bronze, silver, gold, rejection, manifest, profile, fingerprint, drift, and quality-table changes.
+- Failed-run metadata and all evidence produced before the failure are then persisted in `ops` outside the rolled-back transaction.
 - The previously published file remains available to API readers throughout candidate work.
-- Run-scoped raw files are never reused by a later run, so a manifest path and hash continue to identify the bytes that were evaluated.
+- Generated run-scoped raw files are treated as immutable and are never overwritten. A replay may intentionally load those same bytes only after revalidating the complete manifest, paths, sizes, and SHA-256 values, then copying them into a private run directory. The replay records its own manifest against the staged sources.
 - `fail_on_quality=false` is an explicit local override. It publishes the candidate with status `failed_quality`; the API and console surface that degraded status.
+- A replay manifest failure occurs before the data load. It records a failed run and error while leaving the published snapshot and the original source run's manifest untouched.
 
-The live `silver.*_rejections` tables therefore describe the latest **published** snapshot. For a rolled-back candidate, use its `ops.quality_results`, `ops.ingest_files`, and run-scoped source files for investigation.
+The live `silver.*_rejections` tables therefore describe the latest **published** snapshot. For a rolled-back candidate, use its run-detail API response or `ops.quality_results`, `ops.ingest_files`, `ops.dataset_profiles`, `ops.relation_fingerprints`, `ops.drift_results`, and run-scoped source files for investigation.
 
 ## Trip contract
 
@@ -47,9 +48,28 @@ Accepted payment fields are typed into `silver.payments`. Duplicate detection ha
 | Method | `card`, `wallet`, or `invoice` | `invalid_payment_method` |
 | Paid timestamp | `paid_at` casts to a timestamp | `invalid_paid_at` |
 
+## Snapshot and replay contract
+
+`metropulse run --as-of YYYY-MM-DD` declares the inclusive interval end; omitting it uses yesterday, and a future value is rejected. With days, seed, interval end, and `snapshot-v1` fixed, generated source bytes are reproducible across execution dates.
+
+`metropulse replay --run-id RUN_ID` inherits the original run's days, seed, interval, configuration hash, and contract. Before loading, replay requires exactly four manifest datasets (`trips`, `payments`, `stations`, and `weather`), verifies that their aggregate manifest matches the recorded input fingerprint, confines every resolved path to `data/raw/`, validates each file's recorded byte size and SHA-256, and stages verified copies under the new run ID. It recomputes the input fingerprint after ingestion and requires the rebuilt output fingerprint to exactly match the source run before publication. A run created before the replay contract or under a different contract version is not eligible.
+
+`ops.pipeline_runs` records:
+
+| Field | Meaning |
+| --- | --- |
+| `data_interval_start`, `data_interval_end` | Inclusive snapshot window |
+| `source_mode` | `generated` or `replay` |
+| `parent_run_id` | Published snapshot that was current when this candidate began |
+| `replay_of_run_id` | Direct source run for a replay; otherwise `NULL` |
+| `code_version`, `contract_version` | MetroPulse package and snapshot contract versions |
+| `config_sha256` | Hash of days, seed, interval end, and contract |
+| `input_set_sha256` | Hash summarizing the sorted source manifests |
+| `output_set_sha256` | Hash summarizing the six relation fingerprints |
+
 ## Publication checks
 
-The current candidate runs 12 checks. Every outcome records its observed value and threshold in `ops.quality_results`; a missing observation is stored as `NULL` and fails safely.
+The current candidate runs 13 checks. Every outcome records its observed value and threshold in `ops.quality_results`; a missing observation is stored as `NULL` and fails safely.
 
 | Check | Gate |
 | --- | --- |
@@ -64,7 +84,8 @@ The current candidate runs 12 checks. Every outcome records its observed value a
 | `missing_station_references` | Missing start/end dimensions `= 0` |
 | `payment_amount_reconciliation` | Accepted amount defects `= 0` |
 | `dashboard_summary_ready` | Dashboard trip count `>= 1` |
-| `latest_trip_freshness_days` | Latest trip age `<= 5` days |
+| `data_interval_end_gap_days` | Latest accepted trip date equals the declared interval end (`= 0` days) |
+| `cross_snapshot_drift` | Threshold breaches across nine compatible-baseline comparisons `= 0` |
 
 ## Source manifest contract
 
@@ -80,10 +101,36 @@ The current candidate runs 12 checks. Every outcome records its observed value a
 | `row_count` | Bronze rows loaded from the file |
 | `loaded_at` | Manifest persistence timestamp |
 
+The input-set hash is computed from the four sorted manifest records, including dataset, SHA-256, byte size, and row count.
+
+## Profiles, fingerprints, and drift
+
+Each evaluated snapshot records 12 profiles in `ops.dataset_profiles`: `total_trips`, `daily_trip_rate`, `total_revenue`, `revenue_per_trip`, `avg_duration_min`, `avg_distance_km`, `payment_match_rate`, `member_share`, `casual_share`, `corporate_share`, `active_stations`, and `gold_hourly_rows`.
+
+Six fingerprints in `ops.relation_fingerprints` cover `silver.trips`, `silver.payments`, `silver.trip_enriched`, `gold.hourly_mobility`, `gold.daily_station_performance`, and `gold.revenue_by_zone`. Their ordered serialization contains business columns only, excluding ingestion metadata so an exact replay has the same output fingerprint despite a different run ID or load timestamp.
+
+The latest published run with the same requested days and `snapshot-v1` contract is the compatible baseline. Nine profile metrics are thresholded:
+
+| Metric | Delta | Maximum absolute change |
+| --- | --- | ---: |
+| `daily_trip_rate` | Relative | 25% |
+| `revenue_per_trip` | Relative | 20% |
+| `avg_duration_min` | Relative | 20% |
+| `avg_distance_km` | Relative | 20% |
+| `payment_match_rate` | Absolute | 0.02 |
+| `member_share` | Absolute | 0.10 |
+| `casual_share` | Absolute | 0.10 |
+| `corporate_share` | Absolute | 0.05 |
+| `active_stations` | Relative | 10% |
+
+With no compatible baseline, no drift rows are emitted and `cross_snapshot_drift` passes with a `no baseline` explanation. The thresholds are illustrative portfolio policy, not calibrated production SLAs.
+
 ## API validation
 
 - Date filters use ISO `YYYY-MM-DD`; `start_date` must not be after `end_date`.
 - `zone_id` must match `Z` plus two digits.
 - `rider_type` is limited to the trip contract enum.
 - Station `limit` is bounded from 1 through 50.
+- `/api/quality`, `/api/ingest-files`, and `/api/drift` accept `run_id` for historical evidence.
+- `/api/pipeline-runs/{run_id}` requires the MetroPulse run-ID format and returns metadata, checks, manifests, profiles, fingerprints, and drift for that run.
 - A live process with no complete published warehouse returns `503` from `/ready` and data endpoints while `/health` remains `200`.

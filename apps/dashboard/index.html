@@ -231,6 +231,41 @@
               <div id="quality"><div class="skeleton list-skeleton"></div></div>
             </article>
           </div>
+
+          <div class="operations-observability">
+            <article class="panel drift-panel" aria-labelledby="drift-title">
+              <header class="panel-header">
+                <div>
+                  <h3 id="drift-title">Snapshot drift</h3>
+                  <p id="drift-summary">Latest compatible comparison</p>
+                </div>
+                <span class="comparison-status" id="drift-status" role="status">Waiting</span>
+              </header>
+              <div id="drift"><div class="skeleton list-skeleton"></div></div>
+            </article>
+
+            <article
+              class="panel run-investigation hidden"
+              id="run-investigation"
+              aria-labelledby="run-investigation-title"
+              aria-live="polite"
+            >
+              <header class="panel-header">
+                <div>
+                  <h3 id="run-investigation-title" tabindex="-1">Run investigation</h3>
+                  <p id="run-investigation-summary">Select a run to inspect its evidence</p>
+                </div>
+                <button
+                  class="button-secondary compact-button"
+                  id="run-investigation-close"
+                  type="button"
+                >
+                  Close
+                </button>
+              </header>
+              <div id="run-investigation-content"></div>
+            </article>
+          </div>
         </section>
 
         <section class="dashboard-section" id="data-products" aria-labelledby="data-title">

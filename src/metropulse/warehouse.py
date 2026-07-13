@@ -29,6 +29,16 @@ def init_schemas(con: duckdb.DuckDBPyConnection) -> None:
             gold_hourly_rows INTEGER,
             quality_passed INTEGER,
             quality_failed INTEGER,
+            data_interval_start DATE,
+            data_interval_end DATE,
+            source_mode VARCHAR,
+            replay_of_run_id VARCHAR,
+            parent_run_id VARCHAR,
+            code_version VARCHAR,
+            contract_version VARCHAR,
+            config_sha256 VARCHAR,
+            input_set_sha256 VARCHAR,
+            output_set_sha256 VARCHAR,
             error_message VARCHAR
         )
         """
@@ -73,6 +83,63 @@ def init_schemas(con: duckdb.DuckDBPyConnection) -> None:
         """
         ALTER TABLE ops.pipeline_runs
         ADD COLUMN IF NOT EXISTS published_at TIMESTAMP
+        """
+    )
+    for column_name, column_type in (
+        ("data_interval_start", "DATE"),
+        ("data_interval_end", "DATE"),
+        ("source_mode", "VARCHAR"),
+        ("replay_of_run_id", "VARCHAR"),
+        ("parent_run_id", "VARCHAR"),
+        ("code_version", "VARCHAR"),
+        ("contract_version", "VARCHAR"),
+        ("config_sha256", "VARCHAR"),
+        ("input_set_sha256", "VARCHAR"),
+        ("output_set_sha256", "VARCHAR"),
+    ):
+        con.execute(
+            f"ALTER TABLE ops.pipeline_runs ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+        )
+
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ops.dataset_profiles (
+            run_id VARCHAR NOT NULL,
+            metric_name VARCHAR NOT NULL,
+            metric_value DOUBLE,
+            unit VARCHAR NOT NULL,
+            recorded_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            PRIMARY KEY (run_id, metric_name)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ops.relation_fingerprints (
+            run_id VARCHAR NOT NULL,
+            relation_name VARCHAR NOT NULL,
+            row_count BIGINT NOT NULL,
+            fingerprint_sha256 VARCHAR NOT NULL,
+            recorded_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            PRIMARY KEY (run_id, relation_name)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ops.drift_results (
+            run_id VARCHAR NOT NULL,
+            baseline_run_id VARCHAR NOT NULL,
+            metric_name VARCHAR NOT NULL,
+            current_value DOUBLE,
+            baseline_value DOUBLE,
+            delta DOUBLE,
+            delta_kind VARCHAR NOT NULL,
+            threshold DOUBLE NOT NULL,
+            status VARCHAR NOT NULL,
+            checked_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            PRIMARY KEY (run_id, metric_name)
+        )
         """
     )
     con.execute(
