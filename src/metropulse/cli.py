@@ -38,9 +38,16 @@ def run(
         seed=seed,
         fail_on_quality=fail_on_quality,
     )
-    console.print(f"[bold green]Pipeline succeeded[/] run_id={result.run_id}")
+    if result.failed_checks:
+        console.print(
+            f"[bold yellow]Pipeline published with failed quality gates[/] run_id={result.run_id}"
+        )
+    else:
+        console.print(f"[bold green]Pipeline succeeded[/] run_id={result.run_id}")
     console.print(f"Warehouse: [bold]{result.db_path}[/]")
     console.print(f"Silver trips: [bold]{result.total_trips:,}[/]")
+    console.print(f"Rejected trips: [bold]{result.rejected_trips:,}[/]")
+    console.print(f"Source manifests: [bold]{len(result.ingest_files)}[/]")
     console.print(f"Gold hourly rows: [bold]{result.gold_hourly_rows:,}[/]")
 
     table = Table(title="Quality Checks")
@@ -50,7 +57,8 @@ def run(
     table.add_column("Threshold")
     for check in result.quality_checks:
         status = "[green]pass[/]" if check.status == "pass" else "[red]fail[/]"
-        table.add_row(check.name, status, f"{check.observed_value:.4g}", check.threshold)
+        observed = "null" if check.observed_value is None else f"{check.observed_value:.4g}"
+        table.add_row(check.name, status, observed, check.threshold)
     console.print(table)
 
 
@@ -75,6 +83,70 @@ def show_summary(
         for name, value in zip(columns, summary, strict=True):
             table.add_row(name, str(value))
         console.print(table)
+    finally:
+        con.close()
+
+
+@app.command()
+def status(
+    project_root: Annotated[
+        Path, typer.Option(help="Project root containing the warehouse.")
+    ] = Path("."),
+) -> None:
+    """Show the latest run, quality outcome, and ingested source files."""
+
+    paths = ProjectPaths.from_root(project_root)
+    if not paths.db_path.exists():
+        raise typer.BadParameter("Warehouse not found. Run `metropulse run` first.")
+
+    con = connect(paths.db_path, read_only=True)
+    try:
+        run = con.execute(
+            """
+            SELECT
+                run_id,
+                status,
+                started_at,
+                ended_at,
+                published_at,
+                raw_trips,
+                silver_trips,
+                rejected_trips,
+                quality_passed,
+                quality_failed
+            FROM ops.pipeline_runs
+            ORDER BY started_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if run is None:
+            raise typer.BadParameter("No pipeline runs found. Run `metropulse run` first.")
+
+        columns = [description[0] for description in con.description]
+        summary = Table(title="Latest Pipeline Run")
+        summary.add_column("Field")
+        summary.add_column("Value")
+        for name, value in zip(columns, run, strict=True):
+            summary.add_row(name, str(value))
+        console.print(summary)
+
+        manifests = con.execute(
+            """
+            SELECT dataset_name, source_file, row_count, left(file_sha256, 12)
+            FROM ops.ingest_files
+            WHERE run_id = ?
+            ORDER BY dataset_name
+            """,
+            [run[0]],
+        ).fetchall()
+        files = Table(title="Source Manifest")
+        files.add_column("Dataset")
+        files.add_column("File")
+        files.add_column("Rows", justify="right")
+        files.add_column("SHA-256")
+        for manifest in manifests:
+            files.add_row(*(str(value) for value in manifest))
+        console.print(files)
     finally:
         con.close()
 

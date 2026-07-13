@@ -1,12 +1,14 @@
 import { createReadStream, existsSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { extname, join, resolve } from 'node:path';
+import { extname, resolve } from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { resolvePublicFile } from './server-path.mjs';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = resolve(root, 'dist');
-const publicRoot = existsSync(dist) ? dist : root;
+const defaultPublicRoot = existsSync(dist) ? dist : root;
 const host = process.env.HOST || '127.0.0.1';
 const port = Number(process.env.PORT || 5173);
 
@@ -18,21 +20,59 @@ const contentTypes = {
   '.svg': 'image/svg+xml',
 };
 
-createServer((request, response) => {
-  const requestUrl = new URL(request.url || '/', `http://${host}:${port}`);
-  const pathname = requestUrl.pathname === '/' ? '/index.html' : requestUrl.pathname;
-  const filePath = resolve(join(publicRoot, pathname));
+export function createDashboardServer({
+  publicRoot = defaultPublicRoot,
+  createFileStream = createReadStream,
+} = {}) {
+  return createServer((request, response) => {
+    if (!['GET', 'HEAD'].includes(request.method || 'GET')) {
+      response.writeHead(405, { Allow: 'GET, HEAD' });
+      response.end('Method not allowed');
+      return;
+    }
 
-  if (!filePath.startsWith(publicRoot) || !existsSync(filePath)) {
-    response.writeHead(404);
-    response.end('Not found');
-    return;
-  }
+    let requestUrl;
+    try {
+      requestUrl = new URL(request.url || '/', 'http://localhost');
+    } catch {
+      response.writeHead(400);
+      response.end('Bad request');
+      return;
+    }
+    const pathname = requestUrl.pathname === '/' ? '/index.html' : requestUrl.pathname;
+    const filePath = resolvePublicFile(publicRoot, pathname);
+    if (!filePath) {
+      response.writeHead(404);
+      response.end('Not found');
+      return;
+    }
 
-  response.writeHead(200, {
-    'Content-Type': contentTypes[extname(filePath)] || 'application/octet-stream',
+    const stream = createFileStream(filePath);
+    stream.once('error', (error) => {
+      if (!response.headersSent) {
+        response.writeHead(500);
+        response.end('Unable to read asset');
+      } else {
+        response.destroy(error);
+      }
+    });
+    stream.once('open', () => {
+      response.writeHead(200, {
+        'Content-Type': contentTypes[extname(filePath)] || 'application/octet-stream',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      if (request.method === 'HEAD') {
+        stream.destroy();
+        response.end();
+        return;
+      }
+      stream.pipe(response);
+    });
   });
-  createReadStream(filePath).pipe(response);
-}).listen(port, host, () => {
-  console.log(`MetroPulse dashboard serving http://${host}:${port}`);
-});
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  createDashboardServer().listen(port, host, () => {
+    console.log(`MetroPulse dashboard serving http://${host}:${port}`);
+  });
+}

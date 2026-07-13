@@ -1,27 +1,34 @@
-.PHONY: setup pipeline test lint api dashboard verify clean
+.PHONY: setup pipeline status test lint api dashboard verify clean
+
+PYTHON ?= $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
+METROPULSE = $(PYTHON) -m metropulse.cli
 
 setup:
-	python -m pip install -e ".[dev]"
-	cd apps/dashboard && npm run build
+	$(PYTHON) -m pip install -e ".[dev]"
+	npm --prefix apps/dashboard run build
 
 pipeline:
-	metropulse run --days 45 --seed 20260611
+	$(METROPULSE) run --days 45 --seed 20260611
+
+status:
+	$(METROPULSE) status
 
 test:
-	pytest -q
+	$(PYTHON) -m pytest -q
 
 lint:
-	ruff check src tests
+	$(PYTHON) -m ruff check src tests
 
 api:
-	metropulse serve-api --host 127.0.0.1 --port 8000
+	$(METROPULSE) serve-api --host 127.0.0.1 --port 8000
 
 dashboard:
-	cd apps/dashboard && npm run dev
+	npm --prefix apps/dashboard run dev
 
-verify: pipeline test lint
-	cd apps/dashboard && npm run build
+verify:
+	bash scripts/verify.sh
 
 clean:
-	rm -f data/raw/*.csv data/warehouse/*.duckdb data/warehouse/*.duckdb.wal
+	rm -f data/raw/*.csv data/warehouse/*.duckdb data/warehouse/*.duckdb.wal data/warehouse/*.duckdb.lock
+	rm -rf data/raw/runs
 	rm -rf .pytest_cache .ruff_cache apps/dashboard/dist

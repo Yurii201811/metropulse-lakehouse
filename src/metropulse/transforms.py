@@ -18,7 +18,8 @@ def build_silver(con: duckdb.DuckDBPyConnection) -> None:
             capacity::INTEGER AS capacity,
             CAST(opened_at AS DATE) AS opened_at,
             loaded_at,
-            source_file
+            source_file,
+            source_run_id
         FROM bronze.stations
         """
     )
@@ -33,8 +34,72 @@ def build_silver(con: duckdb.DuckDBPyConnection) -> None:
             wind_kph::DOUBLE AS wind_kph,
             condition::VARCHAR AS condition,
             loaded_at,
-            source_file
+            source_file,
+            source_run_id
         FROM bronze.weather
+        """
+    )
+
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE trip_contract_stage AS
+        WITH typed AS (
+            SELECT
+                nullif(trim(trip_id::VARCHAR), '') AS trip_id,
+                try_cast(started_at AS TIMESTAMP) AS started_at,
+                try_cast(ended_at AS TIMESTAMP) AS ended_at,
+                nullif(trim(start_station_id::VARCHAR), '') AS start_station_id,
+                nullif(trim(end_station_id::VARCHAR), '') AS end_station_id,
+                lower(trim(rider_type::VARCHAR)) AS rider_type,
+                lower(trim(vehicle_type::VARCHAR)) AS vehicle_type,
+                try_cast(distance_km AS DOUBLE) AS distance_km,
+                try_cast(duration_min AS DOUBLE) AS duration_min,
+                loaded_at,
+                source_file,
+                source_run_id
+            FROM bronze.trips
+        )
+        SELECT
+            *,
+            CASE
+                WHEN trip_id IS NULL THEN 'missing_trip_id'
+                WHEN started_at IS NULL OR ended_at IS NULL THEN 'invalid_timestamp'
+                WHEN ended_at <= started_at THEN 'non_positive_trip_window'
+                WHEN start_station_id IS NULL OR end_station_id IS NULL
+                    THEN 'missing_station_id'
+                WHEN rider_type NOT IN ('member', 'casual', 'corporate')
+                    THEN 'invalid_rider_type'
+                WHEN vehicle_type NOT IN ('e-bike', 'classic-bike', 'scooter')
+                    THEN 'invalid_vehicle_type'
+                WHEN distance_km IS NULL OR NOT isfinite(distance_km) OR distance_km <= 0
+                    THEN 'invalid_distance'
+                WHEN duration_min IS NULL OR NOT isfinite(duration_min) OR duration_min <= 0
+                    THEN 'invalid_duration'
+                ELSE NULL
+            END AS rejection_reason
+        FROM typed
+        """
+    )
+
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE silver.trip_rejections AS
+        SELECT
+            trip_id,
+            started_at,
+            ended_at,
+            start_station_id,
+            end_station_id,
+            rider_type,
+            vehicle_type,
+            distance_km,
+            duration_min,
+            rejection_reason,
+            loaded_at,
+            source_file,
+            source_run_id
+        FROM trip_contract_stage
+        WHERE rejection_reason IS NOT NULL
         """
     )
 
@@ -42,23 +107,91 @@ def build_silver(con: duckdb.DuckDBPyConnection) -> None:
         """
         CREATE OR REPLACE TABLE silver.trips AS
         SELECT
-            trip_id::VARCHAR AS trip_id,
-            CAST(started_at AS TIMESTAMP) AS started_at,
-            CAST(ended_at AS TIMESTAMP) AS ended_at,
-            start_station_id::VARCHAR AS start_station_id,
-            end_station_id::VARCHAR AS end_station_id,
-            rider_type::VARCHAR AS rider_type,
-            vehicle_type::VARCHAR AS vehicle_type,
-            distance_km::DOUBLE AS distance_km,
-            duration_min::DOUBLE AS duration_min,
+            trip_id,
+            started_at,
+            ended_at,
+            start_station_id,
+            end_station_id,
+            rider_type,
+            vehicle_type,
+            distance_km,
+            duration_min,
             loaded_at,
-            source_file
-        FROM bronze.trips
-        WHERE
-            trip_id IS NOT NULL
-            AND CAST(ended_at AS TIMESTAMP) > CAST(started_at AS TIMESTAMP)
-            AND distance_km::DOUBLE > 0
-            AND duration_min::DOUBLE > 0
+            source_file,
+            source_run_id
+        FROM trip_contract_stage
+        WHERE rejection_reason IS NULL
+        """
+    )
+
+    con.execute(
+        """
+        CREATE OR REPLACE TEMP TABLE payment_contract_stage AS
+        WITH typed AS (
+            SELECT
+                nullif(trim(payment_id::VARCHAR), '') AS payment_id,
+                nullif(trim(trip_id::VARCHAR), '') AS trip_id,
+                try_cast(fare_amount AS DOUBLE) AS fare_amount,
+                try_cast(discount_amount AS DOUBLE) AS discount_amount,
+                try_cast(tax_amount AS DOUBLE) AS tax_amount,
+                try_cast(total_amount AS DOUBLE) AS total_amount,
+                lower(trim(payment_method::VARCHAR)) AS payment_method,
+                try_cast(paid_at AS TIMESTAMP) AS paid_at,
+                loaded_at,
+                source_file,
+                source_run_id
+            FROM bronze.payments
+        ), counted AS (
+            SELECT
+                *,
+                count(*) OVER (PARTITION BY payment_id) AS payment_id_count,
+                count(*) OVER (PARTITION BY trip_id) AS trip_id_count
+            FROM typed
+        )
+        SELECT
+            *,
+            CASE
+                WHEN payment_id IS NULL THEN 'missing_payment_id'
+                WHEN trip_id IS NULL THEN 'missing_trip_id'
+                WHEN payment_id_count > 1 THEN 'duplicate_payment_id'
+                WHEN trip_id_count > 1 THEN 'duplicate_trip_payment'
+                WHEN fare_amount IS NULL OR discount_amount IS NULL
+                    OR tax_amount IS NULL OR total_amount IS NULL
+                    THEN 'invalid_amount'
+                WHEN NOT isfinite(fare_amount) OR NOT isfinite(discount_amount)
+                    OR NOT isfinite(tax_amount) OR NOT isfinite(total_amount)
+                    THEN 'invalid_amount'
+                WHEN fare_amount < 0 OR discount_amount < 0 OR tax_amount < 0
+                    OR total_amount < 0 THEN 'negative_amount'
+                WHEN abs(total_amount - (fare_amount - discount_amount + tax_amount)) > 0.02
+                    THEN 'amount_reconciliation_failed'
+                WHEN payment_method NOT IN ('card', 'wallet', 'invoice')
+                    THEN 'invalid_payment_method'
+                WHEN paid_at IS NULL THEN 'invalid_paid_at'
+                ELSE NULL
+            END AS rejection_reason
+        FROM counted
+        """
+    )
+
+    con.execute(
+        """
+        CREATE OR REPLACE TABLE silver.payment_rejections AS
+        SELECT
+            payment_id,
+            trip_id,
+            fare_amount,
+            discount_amount,
+            tax_amount,
+            total_amount,
+            payment_method,
+            paid_at,
+            rejection_reason,
+            loaded_at,
+            source_file,
+            source_run_id
+        FROM payment_contract_stage
+        WHERE rejection_reason IS NOT NULL
         """
     )
 
@@ -66,18 +199,19 @@ def build_silver(con: duckdb.DuckDBPyConnection) -> None:
         """
         CREATE OR REPLACE TABLE silver.payments AS
         SELECT
-            payment_id::VARCHAR AS payment_id,
-            trip_id::VARCHAR AS trip_id,
-            fare_amount::DOUBLE AS fare_amount,
-            discount_amount::DOUBLE AS discount_amount,
-            tax_amount::DOUBLE AS tax_amount,
-            total_amount::DOUBLE AS total_amount,
-            payment_method::VARCHAR AS payment_method,
-            CAST(paid_at AS TIMESTAMP) AS paid_at,
+            payment_id,
+            trip_id,
+            fare_amount,
+            discount_amount,
+            tax_amount,
+            total_amount,
+            payment_method,
+            paid_at,
             loaded_at,
-            source_file
-        FROM bronze.payments
-        WHERE total_amount::DOUBLE >= 0
+            source_file,
+            source_run_id
+        FROM payment_contract_stage
+        WHERE rejection_reason IS NULL
         """
     )
 
@@ -195,7 +329,9 @@ def build_gold(con: duckdb.DuckDBPyConnection) -> None:
             max(trip_date) AS last_trip_date,
             round(avg(duration_min), 2) AS avg_duration_min,
             round(sum(CASE WHEN has_payment THEN 1 ELSE 0 END) * 1.0 / count(*), 4)
-                AS payment_match_rate
+                AS payment_match_rate,
+            (SELECT count(*)::INTEGER FROM silver.trip_rejections) AS rejected_trips,
+            (SELECT count(*)::INTEGER FROM silver.payment_rejections) AS rejected_payments
         FROM silver.trip_enriched
         """
     )

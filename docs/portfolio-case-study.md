@@ -1,62 +1,67 @@
-# Portfolio Case Study
+# Portfolio case study
 
-## Project
+## The problem
 
-MetroPulse Lakehouse is a self-contained urban mobility data platform. It turns raw trip, payment, station, and weather feeds into analytics-ready DuckDB marts, validates the data, exposes it through FastAPI, and renders a dashboard for operations and revenue monitoring.
+An urban mobility team needs trustworthy answers about demand, revenue, station use, and pipeline health. A chart is not enough: operators also need to know which source bytes produced the numbers, which rows were rejected, which checks authorized publication, and whether a new run replaced a healthy snapshot.
 
-## Problem Framing
+MetroPulse models that system end to end on a laptop.
 
-Mobility teams need to know whether demand, revenue, station usage, and data quality are healthy. The project models that workflow end to end:
+## The solution
 
-- Source feeds arrive as raw CSV files.
-- The warehouse preserves raw lineage in bronze tables.
-- Silver tables clean and type the data.
-- A joined trip fact table combines stations, payments, and weather.
-- Gold marts power API and dashboard use cases.
-- Quality results are stored as auditable operational data.
+The project generates four realistic feeds and stores each run under a unique source directory. DuckDB loads a copy-on-write bronze/silver/gold candidate inside one transaction. Trip and payment contracts split accepted and rejected records; 12 checks then decide whether the candidate can publish. An atomic file replacement keeps FastAPI readers on the prior snapshot during candidate work. The API exposes the published snapshot, operational evidence, filters, and lineage, while a responsive console consumes those products independently.
 
-## Data Engineering Highlights
+## Engineering decisions
 
-- Deterministic source generation for repeatable local runs and tests
-- DuckDB warehouse with `bronze`, `silver`, `gold`, and `ops` schemas
-- SQL transformations for dimensional and fact modeling
-- Persistent pipeline run metadata in `ops.pipeline_runs`
-- Quality checks persisted in `ops.quality_results`
-- FastAPI endpoints over gold marts
-- Dependency-free dashboard that consumes the API
-- Automated pytest coverage for pipeline, API, and quality persistence
-- CI workflow that runs the same verification path as a developer laptop
+### Protect readers from failed runs
 
-## Demo Script
+The pipeline writes an isolated candidate rather than locking the published file. A concurrency test proves API readers can still query the prior run during transformation; failed-quality coverage proves gold KPIs and `published_at` stay on the successful run while failed-run checks and manifests remain auditable.
+
+### Make invalid rows visible
+
+Safe casts and explicit rejection reasons replace silent filtering. Payment duplicate detection happens before the join, so a duplicate cannot multiply facts or revenue.
+
+### Make inputs verifiable
+
+`ops.ingest_files` records the run-scoped path, full SHA-256, byte size, and row count. Tests verify that a later failed run cannot invalidate the manifest of the published snapshot.
+
+### Separate liveness from readiness
+
+`/health` answers whether the API process is alive. `/ready` verifies required warehouse tables and a published run. Data endpoints return a controlled `503` when the snapshot is unavailable.
+
+### Tell the truth in the UI
+
+Trips and revenue share a time domain but have different units and axes. Every returned hour is rendered, and a keyboard-accessible table exposes the values. The lineage section renders source-to-target edges and transformation types from the API rather than a hard-coded diagram.
+
+## Verified outcome
+
+On 2026-07-13, the 45-day reference run produced 12,034 accepted trips, $64,194.47 matched revenue, 28 active stations, four source manifests, 7,731 gold hourly rows, and 12 passing quality checks. The full automated suite includes 13 Python tests and 14 frontend/server tests, plus Ruff and an isolated end-to-end run.
+
+## Demo
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
-bash scripts/verify.sh
+make verify
+make pipeline
 ```
 
-Then start the two local services:
+Then start the API and console in separate terminals:
 
 ```bash
-metropulse serve-api --host 127.0.0.1 --port 8000
-npm --prefix apps/dashboard run dev
+make api
+make dashboard
 ```
 
-Open `http://127.0.0.1:5173`.
+Open `http://127.0.0.1:5173`, filter by zone and rider, open the command menu with `⌘K`/`Ctrl+K`, inspect source hashes and lineage, and run `metropulse status` in the terminal.
 
-## Interview Narrative
+## How it scales
 
-The most important design choice is separating concerns. Raw source fidelity lives in bronze. Silver models enforce types, valid timestamps, station references, and payment joins. Gold models are shaped around concrete consumers: hourly mobility trends, station performance, zone revenue, and dashboard KPIs.
+- Run-scoped local files become versioned object-storage prefixes.
+- The DuckDB transaction becomes a staging schema plus atomic warehouse swap.
+- The CLI becomes an Airflow, Dagster, or Prefect asset graph.
+- SQL transformations become dbt models with contract tests.
+- `ops` evidence feeds alerting, SLAs, and an observability warehouse.
+- FastAPI and the console gain authentication, deployment, and telemetry.
 
-The project also treats quality as data. Checks are not just terminal output; each run records pass/fail status and observed values, which makes quality auditable and visible to downstream users.
-
-## What I Would Add In Production
-
-- Object storage for raw files
-- Airflow, Dagster, or Prefect orchestration
-- dbt models and dbt tests
-- Great Expectations or Soda checks
-- Incremental loading and backfill controls
-- Cloud warehouse deployment
-- Observability metrics and alerting
+The important part is that those production substitutions preserve boundaries already demonstrated here: source identity, row contracts, publication policy, consumer models, and operational evidence.

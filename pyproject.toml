@@ -4,27 +4,45 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "metropulse-lakehouse"
-version = "0.1.0"
-description = "End-to-end urban mobility data engineering portfolio project with ingestion, DuckDB warehouse, quality gates, API, and dashboard."
+version = "0.2.0"
+description = "Observable urban mobility lakehouse with atomic snapshots, data contracts, FastAPI, and an operations dashboard."
 readme = "README.md"
 requires-python = ">=3.11"
-authors = [{ name = "Portfolio Project" }]
+authors = [{ name = "Yurii Bakurov" }]
+license = { file = "LICENSE" }
+keywords = ["data-engineering", "duckdb", "fastapi", "lakehouse", "observability"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
 dependencies = [
-  "duckdb>=1.1.0",
-  "fastapi>=0.115.0",
-  "httpx>=0.27.0",
-  "pandas>=2.2.0",
-  "pydantic>=2.8.0",
-  "rich>=13.7.0",
-  "typer>=0.12.0",
-  "uvicorn>=0.30.0"
+  "duckdb>=1.1.0,<2",
+  "fastapi>=0.115.0,<1",
+  "pandas>=2.2.0,<4",
+  "rich>=13.7.0,<16",
+  "typer>=0.12.0,<1",
+  "uvicorn>=0.30.0,<1"
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.2.0",
-  "ruff>=0.6.0"
+  "httpx>=0.27.0,<1",
+  "pytest>=8.2.0,<10",
+  "ruff>=0.6.0,<1"
 ]
+
+[project.urls]
+Changelog = "https://github.com/Yurii201811/metropulse-lakehouse/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/Yurii201811/metropulse-lakehouse"
+Issues = "https://github.com/Yurii201811/metropulse-lakehouse/issues"
+Repository = "https://github.com/Yurii201811/metropulse-lakehouse"
 
 [project.scripts]
 metropulse = "metropulse.cli:app"

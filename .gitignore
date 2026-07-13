@@ -1,12 +1,16 @@
 .DS_Store
+.env
 .venv/
+build/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
 .test-runs/
 *.egg-info/
 data/raw/*.csv
+data/raw/**/*.csv
 data/warehouse/*.duckdb
 data/warehouse/*.duckdb.wal
+data/warehouse/*.duckdb.lock
 apps/dashboard/node_modules/
 apps/dashboard/dist/

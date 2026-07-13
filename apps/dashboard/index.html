@@ -3,124 +3,356 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MetroPulse Lakehouse</title>
-    <link rel="stylesheet" href="./src/styles.css" />
+    <meta
+      name="description"
+      content="MetroPulse operational console for a local DuckDB lakehouse pipeline."
+    />
+    <title>MetroPulse · Lakehouse operations</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./tokens.css" />
+    <link rel="stylesheet" href="./src/console.css" />
   </head>
   <body>
+    <a class="skip-link" href="#main-content">Skip to dashboard</a>
+
     <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-mark">MP</div>
-          <div>
+      <aside
+        class="sidebar"
+        id="primary-navigation"
+        aria-label="Primary navigation"
+        tabindex="-1"
+      >
+        <a class="brand" href="#overview" aria-label="MetroPulse overview">
+          <span class="brand-mark" aria-hidden="true">MP</span>
+          <span>
             <strong>MetroPulse</strong>
-            <span>Lakehouse</span>
-          </div>
+            <small>Lakehouse operations</small>
+          </span>
+        </a>
+
+        <div class="rail-status" id="sidebar-status" role="status">
+          <span class="status-indicator" aria-hidden="true"></span>
+          <span>
+            <strong>Connecting</strong>
+            <small>Checking published snapshot</small>
+          </span>
         </div>
-        <nav aria-label="Dashboard navigation">
-          <button class="nav-item active" type="button">
-            <span class="icon">▦</span>
-            Dashboard
-          </button>
-          <button class="nav-item" type="button">
-            <span class="icon">◷</span>
-            Pipeline
-          </button>
-          <button class="nav-item" type="button">
-            <span class="icon">✓</span>
-            Quality
-          </button>
-          <button class="nav-item" type="button">
-            <span class="icon">▤</span>
-            Tables
-          </button>
-          <button class="nav-item" type="button">
-            <span class="icon">⌁</span>
-            Docs
-          </button>
+
+        <nav class="rail-nav" aria-label="Dashboard sections">
+          <a class="rail-link active" href="#overview" data-section="overview" aria-current="page">
+            Overview
+          </a>
+          <a class="rail-link" href="#operations" data-section="operations">
+            Runs &amp; quality
+          </a>
+          <a class="rail-link" href="#data-products" data-section="data-products">
+            Data products
+          </a>
+          <a class="rail-link" href="#lineage-section" data-section="lineage-section">
+            Lineage
+          </a>
         </nav>
-        <div class="sidebar-footer">
-          <span class="footer-icon">◇</span>
-          <div>
-            <strong>DuckDB warehouse</strong>
-            <span>Bronze to gold marts</span>
-          </div>
+
+        <button
+          class="command-trigger rail-command"
+          id="command-trigger"
+          type="button"
+          aria-label="Open command menu"
+          aria-keyshortcuts="Meta+K Control+K"
+        >
+          <span>Commands</span>
+          <kbd>⌘ K</kbd>
+        </button>
+
+        <div class="rail-footer">
+          <strong>Local-first stack</strong>
+          <span>Python · DuckDB · FastAPI</span>
+          <span id="rail-version">API version —</span>
         </div>
       </aside>
 
-      <main class="workspace">
+      <button
+        class="nav-backdrop"
+        id="nav-backdrop"
+        type="button"
+        aria-label="Close navigation"
+        tabindex="-1"
+      ></button>
+
+      <main class="workspace" id="main-content" tabindex="-1">
         <header class="topbar">
-          <div>
-            <h1>MetroPulse Lakehouse</h1>
-            <p id="date-range">Loading data window</p>
+          <button
+            class="mobile-menu button-secondary"
+            id="mobile-menu"
+            type="button"
+            aria-controls="primary-navigation"
+            aria-expanded="false"
+          >
+            Menu
+          </button>
+          <div class="title-block">
+            <p class="context-label">Published warehouse snapshot</p>
+            <h1>Mobility operations console</h1>
+            <p id="date-range">Loading data window…</p>
           </div>
-          <div class="run-chip" id="run-status">connecting</div>
+          <div class="topbar-actions">
+            <button
+              class="command-trigger desktop-command"
+              id="desktop-command"
+              type="button"
+              aria-label="Open command menu"
+              aria-keyshortcuts="Meta+K Control+K"
+            >
+              <span>Commands</span>
+              <kbd>⌘ K</kbd>
+            </button>
+            <div class="run-chip" id="run-status" role="status">
+              <span class="status-indicator" aria-hidden="true"></span>
+              <span>Connecting</span>
+            </div>
+          </div>
         </header>
 
-        <div class="state-panel" id="loading-state">
-          <strong>Loading warehouse metrics</strong>
-        </div>
-        <div class="state-panel error hidden" id="error-state"></div>
-
-        <section class="dashboard-grid hidden" id="dashboard">
-          <section class="kpi-row" aria-label="Key metrics" id="kpis"></section>
-
-          <section class="chart-panel">
-            <div class="panel-header">
-              <h2>Trips and revenue by hour</h2>
-              <span>Gold mart: hourly_mobility</span>
+        <section class="filter-panel" aria-labelledby="filter-title">
+          <div class="filter-heading">
+            <div>
+              <h2 id="filter-title">Query window</h2>
+              <p>Filters are applied directly to the published silver model.</p>
             </div>
-            <div class="chart-wrap">
-              <svg id="timeseries-chart" viewBox="0 0 720 250" role="img" aria-label="Trips and revenue time series"></svg>
-              <div class="legend">
-                <span><i class="legend-dot trips"></i>Trips</span>
-                <span><i class="legend-dot revenue"></i>Revenue</span>
-              </div>
+            <p class="filter-count" id="filter-count">Full dataset</p>
+          </div>
+          <form class="filter-form" id="filter-form">
+            <label>
+              <span>Start date</span>
+              <input id="start-date" name="start_date" type="date" />
+            </label>
+            <label>
+              <span>End date</span>
+              <input id="end-date" name="end_date" type="date" />
+            </label>
+            <label>
+              <span>Start zone</span>
+              <select id="zone-filter" name="zone_id">
+                <option value="">All zones</option>
+              </select>
+            </label>
+            <label>
+              <span>Rider type</span>
+              <select id="rider-filter" name="rider_type">
+                <option value="">All riders</option>
+              </select>
+            </label>
+            <div class="filter-actions">
+              <button class="button-primary" id="apply-filters" type="submit">Apply filters</button>
+              <button class="button-secondary" id="reset-filters" type="button">Reset</button>
             </div>
-          </section>
-
-          <aside class="right-rail">
-            <section class="rail-panel">
-              <div class="panel-header">
-                <h2>Pipeline runs</h2>
-                <span>Ops metadata</span>
-              </div>
-              <div class="timeline" id="runs"></div>
-            </section>
-            <section class="rail-panel">
-              <div class="panel-header">
-                <h2>Quality checks</h2>
-                <span>Latest run</span>
-              </div>
-              <div class="quality-list" id="quality"></div>
-            </section>
-          </aside>
-
-          <section class="table-panel">
-            <div class="panel-header">
-              <h2>Station performance</h2>
-              <span>Top departure stations</span>
-            </div>
-            <div class="table-wrap" id="stations"></div>
-          </section>
-
-          <section class="zone-panel">
-            <div class="panel-header">
-              <h2>Revenue by zone</h2>
-              <span>Gold mart: revenue_by_zone</span>
-            </div>
-            <div class="zone-list" id="zones"></div>
-          </section>
-
-          <section class="lineage-panel">
-            <div class="panel-header">
-              <h2>Data lineage</h2>
-              <span id="lineage-run">Latest run</span>
-            </div>
-            <div class="lineage-map" id="lineage"></div>
-          </section>
+          </form>
         </section>
+
+        <div class="notice hidden" id="notice-region" role="status" aria-live="polite"></div>
+
+        <section class="dashboard-section" id="overview" aria-labelledby="overview-title">
+          <div class="section-heading">
+            <div>
+              <h2 id="overview-title">Snapshot health and demand</h2>
+            </div>
+            <p id="snapshot-meta">Waiting for the API</p>
+          </div>
+
+          <div class="metric-ledger" id="kpis">
+            <div class="skeleton metric-skeleton"></div>
+            <div class="skeleton metric-skeleton"></div>
+            <div class="skeleton metric-skeleton"></div>
+            <div class="skeleton metric-skeleton"></div>
+          </div>
+
+          <article class="panel chart-panel" aria-labelledby="timeseries-title">
+            <header class="panel-header">
+              <div>
+                <h3 id="timeseries-title">Trips and revenue by hour</h3>
+                <p>Aligned measures with independent, labeled scales.</p>
+              </div>
+              <button
+                class="button-secondary compact-button"
+                id="chart-table-toggle"
+                type="button"
+                aria-expanded="false"
+                aria-controls="timeseries-table"
+                disabled
+              >
+                View data table
+              </button>
+            </header>
+            <div class="chart-stack" id="timeseries-charts">
+              <div class="skeleton chart-skeleton"></div>
+              <div class="skeleton chart-skeleton"></div>
+            </div>
+            <div
+              class="table-wrap hidden"
+              id="timeseries-table"
+              role="region"
+              aria-label="Hourly trips and revenue data"
+              tabindex="0"
+            ></div>
+          </article>
+        </section>
+
+        <section class="dashboard-section" id="operations" aria-labelledby="operations-title">
+          <div class="section-heading">
+            <div>
+              <h2 id="operations-title">Runs and quality gates</h2>
+            </div>
+            <p>Publication evidence from <code>ops</code></p>
+          </div>
+
+          <div class="split-grid">
+            <article class="panel" aria-labelledby="runs-title">
+              <header class="panel-header">
+                <div>
+                  <h3 id="runs-title">Pipeline runs</h3>
+                  <p>Atomic snapshot history</p>
+                </div>
+              </header>
+              <div id="runs"><div class="skeleton list-skeleton"></div></div>
+            </article>
+
+            <article class="panel" aria-labelledby="quality-title">
+              <header class="panel-header">
+                <div>
+                  <h3 id="quality-title">Quality checks</h3>
+                  <p id="quality-summary">Latest published run</p>
+                </div>
+              </header>
+              <div id="quality"><div class="skeleton list-skeleton"></div></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="dashboard-section" id="data-products" aria-labelledby="data-title">
+          <div class="section-heading">
+            <div>
+              <h2 id="data-title">Station, zone, and source evidence</h2>
+            </div>
+            <p>Filtered aggregates and recorded content hashes</p>
+          </div>
+
+          <div class="data-grid">
+            <article class="panel stations-panel" aria-labelledby="stations-title">
+              <header class="panel-header">
+                <div>
+                  <h3 id="stations-title">Station performance</h3>
+                  <p>Top departure stations</p>
+                </div>
+              </header>
+              <div
+                class="table-wrap"
+                id="stations"
+                role="region"
+                aria-label="Station performance table"
+                tabindex="0"
+              >
+                <div class="skeleton table-skeleton"></div>
+              </div>
+            </article>
+
+            <article class="panel zones-panel" aria-labelledby="zones-title">
+              <header class="panel-header">
+                <div>
+                  <h3 id="zones-title">Revenue by zone</h3>
+                  <p>Contribution to filtered revenue</p>
+                </div>
+              </header>
+              <div class="zone-list" id="zones">
+                <div class="skeleton list-skeleton"></div>
+              </div>
+            </article>
+
+            <article class="panel manifest-panel" aria-labelledby="manifest-title">
+              <header class="panel-header">
+                <div>
+                  <h3 id="manifest-title">Source manifest</h3>
+                  <p>File-level lineage for the published run</p>
+                </div>
+              </header>
+              <div
+                class="table-wrap"
+                id="manifests"
+                role="region"
+                aria-label="Published source manifest table"
+                tabindex="0"
+              >
+                <div class="skeleton table-skeleton"></div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="dashboard-section" id="lineage-section" aria-labelledby="lineage-title">
+          <div class="section-heading">
+            <div>
+              <h2 id="lineage-title">Transformation map</h2>
+            </div>
+            <p id="lineage-run">Latest published run</p>
+          </div>
+
+          <article class="panel lineage-panel">
+            <div class="lineage-map" id="lineage">
+              <div class="skeleton lineage-skeleton"></div>
+            </div>
+          </article>
+        </section>
+
+        <footer class="site-footer">
+          <div>
+            <strong>MetroPulse Lakehouse</strong>
+            <span>Reproducible local data engineering portfolio</span>
+          </div>
+          <nav aria-label="Project links">
+            <a href="https://github.com/Yurii201811/metropulse-lakehouse">GitHub</a>
+            <a id="api-docs-link" href="http://127.0.0.1:8000/docs">API docs</a>
+            <a href="#overview">Back to top</a>
+          </nav>
+        </footer>
       </main>
     </div>
-    <script type="module" src="./src/app.js"></script>
+
+    <dialog class="command-dialog" id="command-dialog" aria-labelledby="command-title">
+      <div class="command-shell">
+        <header>
+          <div>
+            <h2 id="command-title">Command menu</h2>
+            <p>Navigate, reset filters, or inspect the API.</p>
+          </div>
+          <button class="button-secondary compact-button" id="command-close" type="button">Close</button>
+        </header>
+        <label class="command-search">
+          <span class="visually-hidden">Filter commands</span>
+          <input
+            id="command-input"
+            type="search"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-controls="command-list"
+            aria-expanded="true"
+            placeholder="Type a command…"
+            autocomplete="off"
+          />
+        </label>
+        <div class="command-list" id="command-list" role="listbox" aria-label="Available commands"></div>
+        <footer>
+          <span><kbd>↑</kbd><kbd>↓</kbd> move</span>
+          <span><kbd>Enter</kbd> select</span>
+          <span><kbd>Esc</kbd> close</span>
+        </footer>
+      </div>
+    </dialog>
+
+    <script src="./config.js"></script>
+    <script type="module" src="./src/console-app.js"></script>
   </body>
 </html>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import duckdb
 
@@ -9,15 +10,25 @@ import duckdb
 class QualityCheck:
     name: str
     status: str
-    observed_value: float
+    observed_value: float | None
     threshold: str
     details: str
 
 
-def run_quality_checks(con: duckdb.DuckDBPyConnection, run_id: str) -> list[QualityCheck]:
+def run_quality_checks(con: duckdb.DuckDBPyConnection) -> list[QualityCheck]:
     checks = [
         _min_count(con, "raw_trips_loaded", "bronze.trips", 1),
         _min_count(con, "silver_trips_loaded", "silver.trips", 1),
+        _equals_zero(
+            con,
+            "trip_contract_rejections",
+            "SELECT count(*) FROM silver.trip_rejections",
+        ),
+        _equals_zero(
+            con,
+            "payment_contract_rejections",
+            "SELECT count(*) FROM silver.payment_rejections",
+        ),
         _equals_zero(
             con,
             "duplicate_trip_ids",
@@ -35,6 +46,16 @@ def run_quality_checks(con: duckdb.DuckDBPyConnection, run_id: str) -> list[Qual
             con,
             "invalid_trip_timestamps",
             "SELECT count(*) FROM silver.trips WHERE ended_at <= started_at",
+        ),
+        _equals_zero(
+            con,
+            "enriched_trip_cardinality",
+            """
+            SELECT abs(
+                (SELECT count(*) FROM silver.trips)
+                - (SELECT count(*) FROM silver.trip_enriched)
+            )
+            """,
         ),
         _at_least(
             con,
@@ -54,6 +75,15 @@ def run_quality_checks(con: duckdb.DuckDBPyConnection, run_id: str) -> list[Qual
             WHERE start_station_name IS NULL OR end_station_name IS NULL
             """,
         ),
+        _equals_zero(
+            con,
+            "payment_amount_reconciliation",
+            """
+            SELECT count(*)
+            FROM silver.payments
+            WHERE abs(total_amount - (fare_amount - discount_amount + tax_amount)) > 0.02
+            """,
+        ),
         _at_least(
             con,
             "dashboard_summary_ready",
@@ -68,29 +98,49 @@ def run_quality_checks(con: duckdb.DuckDBPyConnection, run_id: str) -> list[Qual
         ),
     ]
 
+    return checks
+
+
+def persist_quality_checks(
+    con: duckdb.DuckDBPyConnection,
+    run_id: str,
+    checks: list[QualityCheck],
+) -> None:
+    checked_at = datetime.now(UTC)
+    con.execute("DELETE FROM ops.quality_results WHERE run_id = ?", [run_id])
     con.executemany(
         """
         INSERT INTO ops.quality_results (
-            run_id, check_name, status, observed_value, threshold, details
+            run_id, check_name, status, observed_value, threshold, details, checked_at
         )
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        [(run_id, c.name, c.status, c.observed_value, c.threshold, c.details) for c in checks],
+        [
+            (
+                run_id,
+                c.name,
+                c.status,
+                c.observed_value,
+                c.threshold,
+                c.details,
+                checked_at,
+            )
+            for c in checks
+        ],
     )
-    return checks
 
 
 def _min_count(
     con: duckdb.DuckDBPyConnection, name: str, table_name: str, minimum: int
 ) -> QualityCheck:
-    observed = float(con.execute(f"SELECT count(*) FROM {table_name}").fetchone()[0])
-    status = "pass" if observed >= minimum else "fail"
+    observed = _observed(con.execute(f"SELECT count(*) FROM {table_name}").fetchone()[0])
+    status = "pass" if observed is not None and observed >= minimum else "fail"
     return QualityCheck(name, status, observed, f">= {minimum}", f"{table_name} row count")
 
 
 def _equals_zero(con: duckdb.DuckDBPyConnection, name: str, sql: str) -> QualityCheck:
-    observed = float(con.execute(sql).fetchone()[0])
-    status = "pass" if observed == 0 else "fail"
+    observed = _observed(con.execute(sql).fetchone()[0])
+    status = "pass" if observed is not None and observed == 0 else "fail"
     return QualityCheck(name, status, observed, "= 0", "Data defect count")
 
 
@@ -100,12 +150,16 @@ def _at_least(
     sql: str,
     threshold: float,
 ) -> QualityCheck:
-    observed = float(con.execute(sql).fetchone()[0])
-    status = "pass" if observed >= threshold else "fail"
+    observed = _observed(con.execute(sql).fetchone()[0])
+    status = "pass" if observed is not None and observed >= threshold else "fail"
     return QualityCheck(name, status, observed, f">= {threshold}", "Minimum acceptable value")
 
 
 def _at_most(con: duckdb.DuckDBPyConnection, name: str, sql: str, threshold: float) -> QualityCheck:
-    observed = float(con.execute(sql).fetchone()[0])
-    status = "pass" if observed <= threshold else "fail"
+    observed = _observed(con.execute(sql).fetchone()[0])
+    status = "pass" if observed is not None and observed <= threshold else "fail"
     return QualityCheck(name, status, observed, f"<= {threshold}", "Maximum acceptable value")
+
+
+def _observed(value: object) -> float | None:
+    return None if value is None else float(value)

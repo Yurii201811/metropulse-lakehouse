@@ -48,6 +48,40 @@ def init_schemas(con: duckdb.DuckDBPyConnection) -> None:
         """
     )
 
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ops.ingest_files (
+            run_id VARCHAR NOT NULL,
+            dataset_name VARCHAR NOT NULL,
+            source_file VARCHAR NOT NULL,
+            file_sha256 VARCHAR NOT NULL,
+            file_bytes BIGINT NOT NULL,
+            row_count BIGINT NOT NULL,
+            loaded_at TIMESTAMP NOT NULL DEFAULT current_timestamp,
+            PRIMARY KEY (run_id, dataset_name)
+        )
+        """
+    )
+
+    con.execute(
+        """
+        ALTER TABLE ops.pipeline_runs
+        ADD COLUMN IF NOT EXISTS rejected_trips INTEGER
+        """
+    )
+    con.execute(
+        """
+        ALTER TABLE ops.pipeline_runs
+        ADD COLUMN IF NOT EXISTS published_at TIMESTAMP
+        """
+    )
+    con.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS quality_results_run_check_idx
+        ON ops.quality_results (run_id, check_name)
+        """
+    )
+
 
 def table_count(con: duckdb.DuckDBPyConnection, table_name: str) -> int:
     return int(con.execute(f"SELECT count(*) FROM {table_name}").fetchone()[0])

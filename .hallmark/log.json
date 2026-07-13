@@ -1,0 +1,15 @@
+[
+  {
+    "sequence": 1,
+    "date": "2026-07-13",
+    "macrostructure": "Workbench",
+    "theme": "Cobalt",
+    "navigation": "N3 side rail",
+    "footer": "Ft2 inline",
+    "enrichment": "none",
+    "brief": "MetroPulse operational observability console",
+    "replaces": "Legacy unstamped top-navigation card dashboard",
+    "pre_emit_critique": "P5 H5 E5 S5 R5 V5",
+    "slop_test": "58/58"
+  }
+]
