@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "metropulse-lakehouse"
-version = "0.3.0"
+version = "0.4.0"
 description = "Observable urban mobility lakehouse with atomic snapshots, data contracts, FastAPI, and an operations dashboard."
 readme = "README.md"
 requires-python = ">=3.11"

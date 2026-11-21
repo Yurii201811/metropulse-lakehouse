@@ -2,6 +2,21 @@
 
 All notable project changes are documented here.
 
+## 0.4.0 — 2026-11-21
+
+### Added
+
+- Portable, SHA-256-verified snapshot bundle export (`metropulse export-snapshot`)
+  writing `run_metadata.json`, `quality_and_drift.json`, `dashboard_summary.json`,
+  formula-neutralized `revenue_by_zone.csv`, and `bundle_manifest.json`.
+- Fail-closed bundle integrity verifier (`metropulse verify-bundle`) rejecting
+  missing, tampered, symlinked, path-escaping, or unexpected files.
+- Unit and CLI regression coverage in `tests/test_exporter.py`.
+
+### Changed
+
+- Package, API, and dashboard version advanced to `0.4.0`.
+
 ## 0.3.0 — 2026-07-13
 
 ### Added

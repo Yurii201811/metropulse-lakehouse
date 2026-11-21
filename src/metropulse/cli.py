@@ -11,6 +11,7 @@ from rich.table import Table
 
 from metropulse.api import create_app
 from metropulse.config import ProjectPaths
+from metropulse.exporter import export_snapshot, verify_snapshot_bundle
 from metropulse.orchestration import PipelineResult, replay_pipeline, run_pipeline
 from metropulse.warehouse import connect
 
@@ -208,6 +209,50 @@ def status(
         console.print(files)
     finally:
         con.close()
+
+
+@app.command("export-snapshot")
+def export_snapshot_cmd(
+    output: Annotated[
+        Path, typer.Option("--output", help="Empty directory for the exported snapshot bundle.")
+    ],
+    run_id: Annotated[
+        str | None,
+        typer.Option("--run-id", help="Specific run_id to export (defaults to latest run)."),
+    ] = None,
+    project_root: Annotated[
+        Path, typer.Option(help="Project root containing the warehouse.")
+    ] = Path("."),
+) -> None:
+    """Export a SHA-256-verified snapshot bundle of run evidence and gold metrics."""
+
+    paths = ProjectPaths.from_root(project_root)
+    try:
+        summary = export_snapshot(paths.db_path, output, run_id=run_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    console.print(f"[bold green]Exported snapshot bundle[/] run_id={summary.run_id}")
+    console.print(f"Directory: [bold]{summary.output_dir}[/]")
+    console.print(f"Files: [bold]{len(summary.files)}[/] (+ bundle_manifest.json)")
+
+
+@app.command("verify-bundle")
+def verify_bundle_cmd(
+    bundle: Annotated[
+        Path, typer.Option("--bundle", help="Snapshot bundle directory to verify.")
+    ],
+) -> None:
+    """Verify a snapshot bundle directory against its SHA-256 manifest."""
+
+    result = verify_snapshot_bundle(bundle)
+    if not result.valid:
+        for err in result.errors:
+            console.print(f"[bold red]FAIL[/] {err}")
+        raise typer.Exit(code=1)
+    console.print(
+        f"[bold green]Bundle verified[/] run_id={result.run_id} files={result.checked_files}"
+    )
 
 
 @app.command("serve-api")
